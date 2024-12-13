@@ -5,5 +5,5 @@
 !*.ipynb
 
 # dirs
-!./FINISHED/*
+!FINISHED/*
 !*.md
