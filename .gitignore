@@ -1,4 +1,9 @@
 # sphere mode
 *
 
+# file types
 !*.ipynb
+
+# dirs
+!FINISHED/*
+!*.md
