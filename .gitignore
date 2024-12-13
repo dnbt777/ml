@@ -3,7 +3,8 @@
 
 # file types
 !*.ipynb
+!*.md
 
 # dirs
+!FINISHED/
 !FINISHED/*
-!*.md
