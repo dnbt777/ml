@@ -4,6 +4,7 @@
 # file types
 !*.ipynb
 !*.md
+!*/res/*
 
 # dirs
 !FINISHED/

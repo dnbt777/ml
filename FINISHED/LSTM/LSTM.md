@@ -3,9 +3,7 @@ My goal with this series is to get good at ML by practicing / doing projects. My
 
 I'm using jax to implement models essentially from scratch, excluding backprop, which is handled automatically by jax. 
 
-I am doing this in a community "Build to Learn" where we build projects (ML, robotics, programming languages, etc) as an effective way to learn the topic.
-[link]
-
+I am doing this in the <a href="https://x.com/i/communities/1860178670687818191">"LEARN BY BUILDING" community on X</a> where we build projects (ML, robotics, programming languages, etc) as an effective way to learn the topic.
 
 My progress so far:
   - MLP training on MNIST
