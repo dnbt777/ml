@@ -9,7 +9,9 @@ I'm using jax to implement models essentially from scratch, excluding backprop, 
 
 Im also posting my progress in the <a href="https://x.com/i/communities/1860178670687818191">"LEARN BY BUILDING" community on X</a> where we build projects (ML, robotics, programming languages, etc) as an effective way to learn the topic.
 
-My progress so far:
+<img src="res/learnbybuilding.png" width=500></img>
+
+'Learning ML in Jax' progress so far:
   - MLP training on MNIST
   - <a href="https://x.com/dnbt777/status/1861678239602913395">CNN trained on MNIST</a>
   - <strong>LSTM trained on my X posts</strong> <---- you are here
@@ -22,22 +24,25 @@ I got an LSTM to train on my posts after repeatedly correcting my misunderstandi
 
 Below I go into detail and list all the resources I found helpful for implementing this.
 
-Oh, and if you want to do this with your posts, I made a colab here: [TODO colab/link]
+Oh, and if you want to try it on your posts, or any .txt, I made a google colab here: [TODO colab/link]
 
+<img src="res/colab.png" width=300 style="border: 1px solid white;border-radius: 5px;padding: 10px;"></img>
 
 ## The plan (originally)
-Get a simple char-level RNN to output shakespeare.
+1. Get a simple char-level RNN to output shakespeare.
 
-Overfit it on a single sample first to make sure I implemented a network that can learn.
+2. Overfit it on a single sample first to make sure I implemented a network that can learn.
 
-Then train it on the full dataset
+3. Then train it on the full dataset
 
-Then get the validation down
+4. Then get the validation down
 
-Finally, switch from shakespeare.txt to my_posts.txt and train it on my x posts
+5. Finally, switch from shakespeare.txt to my_posts.txt and train it on my x posts
 
 
 ## What actually happened
+
+a mess
 
 ### Attempting an RNN
 
