@@ -1,20 +1,24 @@
-# Training an LSTM to Mimic My X Posts (DANN)
-My goal with this series is to get good at ML by practicing / doing projects. My long term goal is to implement custom experiments.
+# Learning ML in Jax: Making an LSTM Mimic My X Posts (Poorly)
+<img src="res/lstm_header.png" width=600></img>
+
+In this post I go over my attempt to get an LSTM to train on my X posts
+
+My goal with this series is to get good at ML by practicing / doing projects in jax. My long term goal is to implement custom experiments.
 
 I'm using jax to implement models essentially from scratch, excluding backprop, which is handled automatically by jax. 
 
-I am doing this in the <a href="https://x.com/i/communities/1860178670687818191">"LEARN BY BUILDING" community on X</a> where we build projects (ML, robotics, programming languages, etc) as an effective way to learn the topic.
+Im also posting my progress in the <a href="https://x.com/i/communities/1860178670687818191">"LEARN BY BUILDING" community on X</a> where we build projects (ML, robotics, programming languages, etc) as an effective way to learn the topic.
 
 My progress so far:
   - MLP training on MNIST
-  - CNN trained on MNIST
+  - <a href="https://x.com/dnbt777/status/1861678239602913395">CNN trained on MNIST</a>
   - <strong>LSTM trained on my X posts</strong> <---- you are here
 
 
 
 ## Training an LSTM to Mimic My X Posts - Summary
 
-I got an LSTM to train well on my posts after repeatedly correcting my understanding of how an LSTM works.
+I got an LSTM to train on my posts after repeatedly correcting my misunderstandings of how an LSTM works.
 
 Below I go into detail and list all the resources I found helpful for implementing this.
 
