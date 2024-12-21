@@ -1,7 +1,15 @@
-# Learning ML in Jax: Making an LSTM Mimic My X Posts (Poorly)
+# Learning ML in Jax: Training an LSTM to Mimic My X Posts
 <img src="res/lstm_header.png" width=600></img>
 
-In this post I go over my attempt to get an LSTM to train on my X posts
+In this post I go over how I trained an LSTM on my X posts. I also post resources/notes [and a colab where you can train](https://colab.research.google.com/drive/11VtLVqw8odPQRhAgx5CvdO_Rs-tA-2rZ?usp=sharing) on your own posts!
+
+Here are some example outputs:
+
+![alt text](res/completion1.png) ![alt text](res/completion0.png)
+
+<i>these are roughly as coherent as my average post</i>
+
+![alt text](res/completion2.png) ![alt text](res/completion3.png)
 
 My goal with this series is to get good at ML by practicing / doing projects in jax. My long term goal is to implement custom experiments.
 
@@ -24,7 +32,7 @@ I got an LSTM to train on my posts after repeatedly correcting my misunderstandi
 
 Below I go into detail and list all the resources I found helpful for implementing this.
 
-Oh, and if you want to try it on your posts, or any .txt, I made a google colab here: [TODO colab/link]
+Oh, and if you want to try it on your posts, or any .txt, I made a google colab [here](https://colab.research.google.com/drive/11VtLVqw8odPQRhAgx5CvdO_Rs-tA-2rZ?usp=sharing)
 
 <img src="res/colab.png" width=300 style="border: 1px solid white;border-radius: 5px;padding: 10px;"></img>
 
@@ -135,6 +143,8 @@ Each token is put through an embedding table, so I wasn't sure whether reducing 
 The model didn't seem to have less val loss, but, on inference, it learned words!!! Finally, the biggest hurdle has been overcome.
 
 I spent WEEKS on this project. WEEKS. and the whole time, it was a vocab issue. LMAO
+
+Also, lowering the temperature from 1.0 to 0.4 made word-level generation much more coherent.
 
 
 ## DANN posts/replies at varying temps
