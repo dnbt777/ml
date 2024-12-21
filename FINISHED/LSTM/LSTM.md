@@ -95,9 +95,9 @@ So I poured over guides and lectures. It turns out, I had a flaw in my understan
 
 I thought the sequence length and lstm layer size was the same, and that you'd feed $x_t$ into $layer_t$.
 
-In reality, you feed each $xt$ into each layer. I.e., if you only have one layer, you'd feed $x_t$ into it to get the next $h$ and $c$, and then feed that $h$, $c$, and $x_{t+1}$ back into it for the entire length of the sequence. Then, you'd take each $h$ generated at each $t$, and use this sequence of hs as the input sequence for the next layer.
+In reality, you feed each $xt$ into each layer. I.e., if you only have one layer, you'd feed $x_t$ into it to get the next $h$ and $c$, and then feed that $h$, $c$, and $x_{t+1}$ back into it for the entire length of the sequence. Then, you'd take each $output$ generated at each $t$, and use this sequence of hs as the input sequence for the next layer.
 
-So the resulting structure looks more like a grid than a line. This image is actually what made me realize I was implementing the model incorrectly.
+So the resulting structure looks more like a grid than a line. The horizontal axis is the $t$ axis, and the vertical axis is the $layer$ axis. This image is actually what made me realize I was implementing the model incorrectly.
 
 <img src="res/grid.png" style="border: 1px solid white;border-radius: 5px;padding: 10px;" width=800></img>
 
