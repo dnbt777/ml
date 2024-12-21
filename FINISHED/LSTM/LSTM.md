@@ -184,9 +184,15 @@ temp = 2.0
 <img src="res/image-7.png" style="border: 1px solid white;border-radius: 5px;padding: 10px;"></img>
 
 
-## Lessons learned
+temp = 0.4 (the best one)
 
-Idk lol
+See above. The ones at the top of this post are all temp=0.4, because that is the temperature at which the model most coherently output words while still being interesting/not going into loops.
+
+BTW, if your language model goes in loops on inference, your temperature may be too low, or you may be argmaxing the output logits instead of doing a weighted random choice of the probabilities from the softmax.
+
+The temperature calculation is done by dividing the logits by the temperature, and then softmaxing. I like to do `probs = softmax(logits / (temp + 0.001))` to prevent inf or zerodiv or whatever
+
+## Lessons learned
 
 It's good to struggle through this. I feel myself getting faster at implementing models. I had to rewrite the LSTM a few times and my speed of implementing changes is much faster. Not due to memorizing. I am noticably faster at implementing new training ideas, such as hyperparameter retuning or the ladder thing I mentioned previously.
 
@@ -194,24 +200,13 @@ I hope to get even faster the more I struggle with other experiments.
 
 This one was fun. if it was some boring experiment, I might have walked away. But the lure of a cool result kept me hooked for weeks. The lesson is, do interesting things
 
+In the future I shouldn't get stuck on one experiment. This one took me like a month. The initial implementation took like no time at all but optimizing it to output words coherently took a long, long time. While I'm learning, maybe I need to move on early if I'm making slow progress. This gives me a higher density of new information learned per day.
 
-## How I did this
+Maybe. Because I stuck with it and optimized the model, I figured out optimization methods that I'll probably use in future models. For example vocab reduction, or incorporating and then lowering temperature by a bit.
 
-So first I downloaded my twitter posts archive, had chatGPT make a script to clean the dataset of posts from twitter.js, and trained an LSTM
+I'm conflicted on this point.
 
-I tried a few experiments that I had in mind. one worked, one didnt.
-
-I made a training algorithm that re-tuned hyperparameters every 5 epochs or so. This got lower loss than anything I had seen in ~1 month of working on this
-
-
-
-## What to do better next time
-
-In the future I shouldn't get stuck on one experiment. While I'm learning, I need to move on early if I'm making slow progress. This gives me a higher density of new information learned per day.
-
-Maybe.
-
-The main strategy, I think, is to have fun while improving. So whatever maximizes some combination of fun and improvement.
+The main strategy though, I think, is to have fun while improving. So whatever maximizes some combination of fun and improvement.
 
 
 ## Resources I used
@@ -235,12 +230,12 @@ https://stackoverflow.com/a/66546571 (super interesting 'what is the optimal min
 
 # Tips
 
-Visualizing what is happening in your network seems to be one of the most important parts of ML
+Visualizing what is happening in your network seems to be one of the most important parts of ML. Both in your mind and also in the debugger or print() statements
 
-Print your grad norms so you can see where the network is learning!
+Print your grad norms so you can see where the network is learning and where it isn't!
 
-In jax, it's very easy to operate over nested structures using tree_util:
+In jax, it's very easy to map a function over nested structures using `tree_util.tree_map`:
 
 <img src="res/image-1.png" style="border: 1px solid white;border-radius: 5px;padding: 10px;"></img>
 
-train with high dropout, then lower dropout as time goes by until you hit the value you want.
+using a lower temperature than 1.0 may help your language model form words coherently
