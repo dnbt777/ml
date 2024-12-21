@@ -1,4 +1,4 @@
-# Learning ML in Jax: Training an LSTM to Mimic My X Posts
+# Practicing ML Experiments in Jax: Training an LSTM to Mimic My X Posts
 <img src="res/lstm_header.png" width=600></img>
 
 In this post I go over how I trained an LSTM on my X posts. I also post resources/notes [and a colab where you can train](https://colab.research.google.com/drive/11VtLVqw8odPQRhAgx5CvdO_Rs-tA-2rZ?usp=sharing) on your own posts!
@@ -13,13 +13,13 @@ Here are some example outputs:
 
 My goal with this series is to get good at ML by practicing / doing projects in jax. My long term goal is to implement custom experiments.
 
-I'm using jax to implement models essentially from scratch, excluding backprop, which is handled automatically by jax. 
+I'm using jax to implement models essentially from scratch, excluding backprop, which is handled automatically by `jax.grad` (really, i use `jax.value_and_grad`)
 
 Im also posting my progress in the <a href="https://x.com/i/communities/1860178670687818191">"LEARN BY BUILDING" community on X</a> where we build projects (ML, robotics, programming languages, etc) as an effective way to learn the topic.
 
 <img src="res/learnbybuilding.png" width=500></img>
 
-'Learning ML in Jax' progress so far:
+'Practicing ML Experiments in Jax' progress so far:
   - MLP training on MNIST
   - <a href="https://x.com/dnbt777/status/1861678239602913395">CNN trained on MNIST</a>
   - <strong>LSTM trained on my X posts</strong> <---- you are here
