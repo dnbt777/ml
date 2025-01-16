@@ -19,11 +19,7 @@
 # WIP
 !TRANSFORMER/
 !TRANSFORMER/*
+!RL_TRANSFORMER/
+!RL_TRANSFORMER/*
 
 
-
-
-
-
-*.bpe
-*.pickle
