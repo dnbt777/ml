@@ -20,3 +20,10 @@
 !TRANSFORMER/
 !TRANSFORMER/*
 
+
+
+
+
+
+*.bpe
+*.pickle
