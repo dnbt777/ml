@@ -6,6 +6,9 @@ import numpy as np
 import random
 from tqdm import tqdm
 
+# I had chatgpt do the dataset loading stuff
+# reason being i wanted to focus on doing the model from scratch
+# 
 
 # BPE Merge Operation
 def bpe_merge(data, merge_pairs):
