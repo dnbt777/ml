@@ -27,7 +27,7 @@ if ipynb == True:
   prefix = "../"
 
 token_type = 'bpe' # wordlevel bpe charlevel
-tokenizer_vocab_size = 500
+tokenizer_vocab_size = 120
 if dataset_name == "shakespeare":
   dataset_path = prefix + "data/shakespeare.txt"
   vocab, train_data, test_data, encode, decode = load_dataset(dataset_path, split=0.9, vocab_size=tokenizer_vocab_size)
