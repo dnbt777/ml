@@ -437,3 +437,196 @@ def aim_at_body(camera_position, target_position):
         )
     )
     return (yaw, pitch)
+
+
+
+def draw_trail_lines(position_history, body_index, base_color, trail_length, trail_fade):
+    """
+    Draw fading trail lines for a given body.
+
+    Args:
+        position_history: The history of positions for all bodies.
+        body_index: Index of the body for which to draw the trail.
+        base_color: RGB tuple for the trail's color.
+        trail_length: Number of historical positions to render.
+        trail_fade: Fade factor for each step in the trail.
+    """
+    r, g, b = [c / 255.0 for c in base_color]
+
+    glBegin(GL_LINES)
+    for t in range(trail_length - 1):
+        # Current and next positions in the trail
+        current_position = position_history[t, body_index]
+        next_position = position_history[t + 1, body_index]
+
+        # Skip if the positions are invalid
+        if np.any(np.isnan(current_position)) or np.any(np.isnan(next_position)):
+            continue
+
+        # Calculate fading opacity
+        opacity = max(0, 1.0 - t * trail_fade)
+
+        # Set the color for the current segment
+        glColor4f(r, g, b, opacity)
+        glVertex3f(*current_position)
+        glVertex3f(*next_position)
+    glEnd()
+
+
+
+
+def draw_cube_edges(edge_color, size, shift=(0.0, 0.0, 0.0)):
+    """
+    Draw a wireframe cube centered at the origin with given size and edge color,
+    shifted by a specified translation vector.
+
+    Args:
+        edge_color (tuple): RGB color of the cube edges (0-255).
+        size (float): Length of the cube's edges.
+        shift (tuple): (x, y, z) shift applied to the cube's position.
+    """
+    half_size = size / 2.0
+    shift_x, shift_y, shift_z = (half_size, half_size, half_size)
+
+    # Define cube vertices with the shift applied
+    vertices = [
+        (-half_size + shift_x, -half_size + shift_y, -half_size + shift_z),
+        ( half_size + shift_x, -half_size + shift_y, -half_size + shift_z),
+        ( half_size + shift_x,  half_size + shift_y, -half_size + shift_z),
+        (-half_size + shift_x,  half_size + shift_y, -half_size + shift_z),
+        (-half_size + shift_x, -half_size + shift_y,  half_size + shift_z),
+        ( half_size + shift_x, -half_size + shift_y,  half_size + shift_z),
+        ( half_size + shift_x,  half_size + shift_y,  half_size + shift_z),
+        (-half_size + shift_x,  half_size + shift_y,  half_size + shift_z)
+    ]
+
+    # Define cube edges
+    edges = [
+        (0, 1), (1, 2), (2, 3), (3, 0),  # Bottom face
+        (4, 5), (5, 6), (6, 7), (7, 4),  # Top face
+        (0, 4), (1, 5), (2, 6), (3, 7)   # Vertical edges
+    ]
+
+    # Set the edge color
+    r, g, b = [c / 255.0 for c in edge_color]
+    glColor3f(r, g, b)
+
+    # Draw the edges
+    glBegin(GL_LINES)
+    for edge in edges:
+        for vertex in edge:
+            glVertex3f(*vertices[vertex])
+    glEnd()
+
+
+
+def draw_sphere_3d(position, radius, color):
+    """
+    Draws a 3D sphere at the specified position with optional transparency.
+    """
+    r, g, b = [c / 255.0 for c in color[:3]]
+    alpha = color[3] / 255.0 if len(color) == 4 else 1.0  # Optional alpha
+    glPushMatrix()
+    glColor4f(r, g, b, alpha)
+    glTranslatef(*position)
+    quadric = gluNewQuadric()
+    gluSphere(quadric, radius, 32, 32)
+    gluDeleteQuadric(quadric)
+    glPopMatrix()
+
+
+
+def draw_sphere_3d_with_normals(position, radius, color, light_direction=(1, 1, 1)):
+    """
+    Draws a 3D sphere at the specified position with normal-based Lambertian shading.
+
+    Args:
+        position: (x, y, z) tuple of the sphere's center.
+        radius: Radius of the sphere.
+        color: Base RGB color of the sphere (0-255).
+        light_direction: (x, y, z) direction of the light source.
+    """
+    r, g, b = [c / 255.0 for c in color[:3]]  # Normalize color to [0, 1]
+    light_direction = np.array(light_direction)
+    light_direction = light_direction / np.linalg.norm(light_direction)  # Normalize light direction
+
+    glPushMatrix()
+    glTranslatef(*position)
+
+    # Subdivide the sphere into stacks and slices
+    stacks = 8
+    slices = 8
+
+    for i in range(stacks):
+        theta1 = math.pi * i / stacks
+        theta2 = math.pi * (i + 1) / stacks
+
+        glBegin(GL_QUAD_STRIP)
+        for j in range(slices + 1):
+            phi = 2 * math.pi * j / slices
+
+            # Compute two vertices on the sphere
+            for theta in [theta1, theta2]:
+                x = radius * math.sin(theta) * math.cos(phi)
+                y = radius * math.cos(theta)
+                z = radius * math.sin(theta) * math.sin(phi)
+
+                # Calculate normal
+                normal = np.array([x, y, z]) / radius  # Normalize the normal
+                brightness = max(np.dot(normal, light_direction), 0.0)  # Lambertian reflection
+
+                # Adjust color based on brightness
+                shaded_color = (r * brightness, g * brightness, b * brightness)
+                glColor3f(*shaded_color)
+
+                # Specify the vertex
+                glNormal3f(*normal)  # Set the normal for lighting calculations
+                glVertex3f(x, y, z)
+        glEnd()
+
+    glPopMatrix()
+
+
+
+def draw_sphere_3d_with_wireframe(position, radius, color, wireframe_color):
+    """
+    Draws a 3D sphere with a low-poly wireframe overlay.
+    The wireframe overlay only appears on the front-facing surfaces.
+
+    Args:
+        position: (x, y, z) tuple of the sphere's center.
+        radius: Radius of the sphere.
+        color: Base RGB color of the sphere (0-255).
+        wireframe_color: RGB color for the wireframe overlay (0-255).
+    """
+    # Render the solid sphere
+    r, g, b = [c / 255.0 for c in color[:3]]
+    glPushMatrix()
+    glColor3f(r, g, b)
+    glTranslatef(*position)
+    quadric = gluNewQuadric()
+    gluSphere(quadric, radius, 32, 32)  # Smooth sphere
+    gluDeleteQuadric(quadric)
+    glPopMatrix()
+
+    # Render the wireframe overlay
+    glLineWidth(2.0)
+    wr, wg, wb = [c / 255.0 for c in wireframe_color[:3]]
+    glPushMatrix()
+    glColor3f(wr, wg, wb)
+    glTranslatef(*position)
+
+    # Enable face culling for the wireframe
+    glEnable(GL_CULL_FACE)
+    glCullFace(GL_BACK)  # Cull back-facing polygons
+
+    quadric = gluNewQuadric()
+    gluQuadricDrawStyle(quadric, GLU_LINE)  # Wireframe mode
+    gluSphere(quadric, radius, 12, 12)  # Low-poly sphere
+    gluDeleteQuadric(quadric)
+
+    # Disable face culling after rendering
+    glDisable(GL_CULL_FACE)
+
+    glPopMatrix()
+

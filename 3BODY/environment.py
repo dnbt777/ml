@@ -10,7 +10,7 @@ import time
 # time: seconds
 
 G = 6.6743e-11 # N * (m^2) / (kg^2)
-dt = 1 # seconds
+dt = 0.5 # seconds
 
 class SolarBody(NamedTuple):
     position : jax.Array # B, 3
@@ -25,7 +25,7 @@ class SolarSystem(NamedTuple):
 true_sun_mass = 1.9e30 # uh
 true_sun_radius = 7e8
 true_planet_mass = 5.9e24
-true_simulation_size = 1.4e11 * 10 # meters
+true_simulation_size = 1.4e11 * 1 # meters
 
 sun_mass = true_sun_mass
 planet_mass = true_planet_mass
@@ -38,9 +38,11 @@ def init_solarsystems(key, batches, planets, suns):
     mass = jrand.uniform(key, (batches, planets + suns,), minval=1/2, maxval=1)
     mass = mass * jnp.array([planet_mass for _ in range(planets)] + [sun_mass for _ in range(suns)])[None, :]
 
+    position = jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=simulation_size)
+
     bodies = SolarBody(
-        position=jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=simulation_size),
-        momentum=jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=0), # force 0 momentum at start for now,
+        position=position,
+        momentum=jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=1) * mass[:, :, None] * 0.01, # force 0 momentum at start for now,
         mass = mass,
         radius = sun_radius * mass / sun_mass,
     )
@@ -56,7 +58,7 @@ def gravity(bodies, body1_idx, body2_idx):
     a = bodies.mass[:, body1_idx] * G
     b = bodies.mass[:, body2_idx]
     c = dist(bodies, body1_idx, body2_idx)**2
-    min_dist = 10 # prevents issues
+    min_dist = bodies.radius[:, body1_idx] # prevents issues
     return a * (b / (c + min_dist))
 
 @jax.jit
@@ -69,7 +71,7 @@ def dist(bodies, body1_idx, body2_idx):
 def direction_vector(bodies, body1_idx, body2_idx):
     a = bodies.position[:, body2_idx] - bodies.position[:, body1_idx]
     b = jnp.sqrt(jnp.sum(a*a, axis=-1))
-    return a/b
+    return a / b[:, None]
 
 
 @jax.jit
@@ -99,8 +101,7 @@ def step_simulation(solar_system : SolarSystem) -> SolarSystem:
                     mass=solar_system.bodies.mass,
                     radius=solar_system.bodies.radius
                 )
-            )
-
+            ) # I don't think this is slow despite looking like it. I think the compiler figures out it doesnt need to move mem around
     # get position based off of momentum
     # for each object:
         # object.position += dt * object.momentum / object.mass
@@ -117,7 +118,6 @@ def step_simulation(solar_system : SolarSystem) -> SolarSystem:
                 radius=solar_system.bodies.radius
             )
         )
-    
     return solar_system
 
 
