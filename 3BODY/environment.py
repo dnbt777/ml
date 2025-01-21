@@ -70,7 +70,7 @@ def init_solarsystems(key, batches, planets, suns):
 
     bodies = SolarBody(
         position=position,
-        momentum=jrand.uniform(key, (batches, planets + suns, 3), minval=-0.5, maxval=0.5) * mass[:, :, None] * 1e3, # force 0 momentum at start for now,
+        momentum=jrand.uniform(key, (batches, planets + suns, 3), minval=-0.5, maxval=0.5) * mass[:, :, None], # velocity from -0.5 to 0.5 m/s
         mass = mass,
         radius = downscaled_sun_radius * (mass / true_sun_mass),
     )
