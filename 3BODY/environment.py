@@ -81,31 +81,17 @@ def init_solarsystems(key, batches, planets, suns):
 
 
 # compute in a way that doesnt intermittently explode to inf
-#@jax.jit
-def gravity_X(bodies, body1_idx, body2_idx):
-    # true scale
-    a = bodies.mass[:, body1_idx] * G
-    b = bodies.mass[:, body2_idx]
-    c = dist(bodies, body1_idx, body2_idx)**2
-    min_dist = bodies.radius[:, body1_idx] # prevents issues
-
-    x1 = a / conversion_to_true_distance
-    x2 = b / (c + min_dist * conversion_to_true_distance)
-    x3 = x2 / (conversion_to_true_distance)
-    return x1 * x3 # doing it this way prevents infs
-
-# compute in a way that doesnt intermittently explode to inf
 @jax.jit
 def gravity(bodies, body1_idx, body2_idx):
     a = bodies.mass[:, body1_idx] * G
     b = bodies.mass[:, body2_idx]
-    c = dist(bodies, body1_idx, body2_idx)**2
+    c = dist_for_gravity(bodies, body1_idx, body2_idx)**2
     min_dist = bodies.radius[:, body1_idx] # prevents issues
     return a * (b / (c + min_dist))
 
+
 @jax.jit
-def dist(bodies, body1_idx, body2_idx):
-    # downscaled
+def dist_for_gravity(bodies, body1_idx, body2_idx):
     a = bodies.position[:, body2_idx] - bodies.position[:, body1_idx]
     a = jnp.sqrt(jnp.sum(a*a, axis=-1))
     return a * conversion_to_true_distance
@@ -123,7 +109,7 @@ def apply_nuke(solar_system : SolarSystem) -> SolarSystem:
     # get momentum change based on solar_system
     # agent(solar_system) -> first_planet_momentum_update
     # for now just do up in the y axis. i.e. [0, 1.0, 0]
-    first_planet_momentum_shift = jnp.ones_like(solar_system.bodies.momentum[:, 0]) * jnp.array([0, 1.0, 0])[None, :] # all batches, first planet * no batches (broadcast)
+    first_planet_momentum_shift = jnp.ones_like(solar_system.bodies.momentum[:, 0]) * jnp.array([0, 100.0, 0])[None, :] * solar_system.bodies.mass[:, 0] # all batches, first planet * no batches (broadcast)
     new_first_planet_momentum = solar_system.bodies.momentum[:, 0] + first_planet_momentum_shift
     new_momentum = solar_system.bodies.momentum.at[:, 0].set(new_first_planet_momentum)
     solar_system = SolarSystem(
