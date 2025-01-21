@@ -10,7 +10,7 @@ import time
 # time: seconds
 
 G = 6.6743e-11 # N * (m^2) / (kg^2)
-dt = 0.5 # seconds
+dt = 3600 # seconds
 
 class SolarBody(NamedTuple):
     position : jax.Array # B, 3
@@ -27,30 +27,72 @@ true_sun_radius = 7e8
 true_planet_mass = 5.9e24
 true_simulation_size = 1.4e11 * 1 # meters
 
-sun_mass = true_sun_mass
-planet_mass = true_planet_mass
-sun_radius = true_sun_radius / true_simulation_size
-simulation_size = true_simulation_size / true_simulation_size
+downscaled_sun_radius = true_sun_radius / true_simulation_size
+downscaled_simulation_size = true_simulation_size / true_simulation_size
 
-# may need to jit this
+conversion_to_downscaled_distance = downscaled_simulation_size / true_simulation_size
+conversion_to_true_distance = true_simulation_size / downscaled_simulation_size
+
+# mass: true
+# momentum: true
+# distances (radius, sim size): downscaled
+
+debug = False
+if debug:
+    jax.config.update("jax_disable_jit", True)
+jax.config.update("jax_debug_nans", True)
+jax.config.update("jax_debug_infs", True)
+
+
+
+def optimal_starting_momentum(planets, suns):
+    # best momentum for producing orbits ~= average gravity * radius? (think swinging ball on rope)
+    # momentum = gravity
+    # avg gravity = (avg_m / G) * ((avg_m / r) / r)
+    # avg m = planets * planet_mass + suns * sun_mass ) / (planets + suns)
+    # avg r = (3*(true_sim_size / (planets + suns)))**(1/3)
+    avg_r = (2/3) * (true_simulation_size / (planets + suns))*jnp.sqrt(3) # volumetric? 2/3 bh tri eq but for dist func from one corner to the other of a cube?
+    avg_m = planets * (true_planet_mass / (planets + suns)) + suns * (true_sun_mass / (planets + suns))
+    avg_gravity = (avg_m * G) * ((avg_m / avg_r) / avg_r)
+    optimal_momentum = avg_gravity * avg_r
+    return optimal_momentum
+
+
+# jit because it gets reused to reinit the environment a lot
 def init_solarsystems(key, batches, planets, suns):
     # make 4 bodies and treat the first as the planet
-    mass = jrand.uniform(key, (batches, planets + suns,), minval=1/2, maxval=1)
-    mass = mass * jnp.array([planet_mass for _ in range(planets)] + [sun_mass for _ in range(suns)])[None, :]
+    mass_scale = jrand.uniform(key, (batches, planets + suns,), minval=1/2, maxval=1)
+    mass = mass_scale * jnp.array([true_planet_mass for _ in range(planets)] + [true_sun_mass for _ in range(suns)])[None, :]
 
-    position = jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=simulation_size)
+    position = jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=downscaled_simulation_size)
+
+    #momentum_scale = optimal_starting_momentum(planets, suns)
 
     bodies = SolarBody(
         position=position,
-        momentum=jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=1) * mass[:, :, None] * 0.01, # force 0 momentum at start for now,
+        momentum=jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=1) * mass[:, :, None] * 0.5, # force 0 momentum at start for now,
         mass = mass,
-        radius = sun_radius * mass / sun_mass,
+        radius = downscaled_sun_radius * (mass / true_sun_mass),
     )
     # return the solar body
     return SolarSystem(
         bodies=bodies
     )
 
+
+# compute in a way that doesnt intermittently explode to inf
+#@jax.jit
+def gravity_X(bodies, body1_idx, body2_idx):
+    # true scale
+    a = bodies.mass[:, body1_idx] * G
+    b = bodies.mass[:, body2_idx]
+    c = dist(bodies, body1_idx, body2_idx)**2
+    min_dist = bodies.radius[:, body1_idx] # prevents issues
+
+    x1 = a / conversion_to_true_distance
+    x2 = b / (c + min_dist * conversion_to_true_distance)
+    x3 = x2 / (conversion_to_true_distance)
+    return x1 * x3 # doing it this way prevents infs
 
 # compute in a way that doesnt intermittently explode to inf
 @jax.jit
@@ -63,15 +105,36 @@ def gravity(bodies, body1_idx, body2_idx):
 
 @jax.jit
 def dist(bodies, body1_idx, body2_idx):
+    # downscaled
     a = bodies.position[:, body2_idx] - bodies.position[:, body1_idx]
     a = jnp.sqrt(jnp.sum(a*a, axis=-1))
-    return a * true_simulation_size
+    return a * conversion_to_true_distance
+
 
 @jax.jit
 def direction_vector(bodies, body1_idx, body2_idx):
     a = bodies.position[:, body2_idx] - bodies.position[:, body1_idx]
     b = jnp.sqrt(jnp.sum(a*a, axis=-1))
     return a / b[:, None]
+
+
+@jax.jit
+def apply_nuke(solar_system : SolarSystem) -> SolarSystem:
+    # get momentum change based on solar_system
+    # agent(solar_system) -> first_planet_momentum_update
+    # for now just do up in the y axis. i.e. [0, 1.0, 0]
+    first_planet_momentum_shift = jnp.ones_like(solar_system.bodies.momentum[:, 0]) * jnp.array([0, 1.0, 0])[None, :] # all batches, first planet * no batches (broadcast)
+    new_first_planet_momentum = solar_system.bodies.momentum[:, 0] + first_planet_momentum_shift
+    new_momentum = solar_system.bodies.momentum.at[:, 0].set(new_first_planet_momentum)
+    solar_system = SolarSystem(
+        bodies=SolarBody(
+            position = solar_system.bodies.position,
+            momentum = new_momentum,
+            mass = solar_system.bodies.mass,
+            radius = solar_system.bodies.radius
+        )
+    )
+    return solar_system
 
 
 @jax.jit
@@ -89,8 +152,6 @@ def step_simulation(solar_system : SolarSystem) -> SolarSystem:
             if body1_idx == body2_idx:
                 continue
             pair_gravity = gravity(solar_system.bodies, body1_idx, body2_idx)
-            #print(f"old_momentum: {solar_system.bodies.momentum[0, body1_idx]}")
-            #print(f"new_momentum: {solar_system.bodies.momentum[0, body1_idx] + dt * pair_gravity}")
             direction = direction_vector(solar_system.bodies, body1_idx, body2_idx)
             momentum_change = dt * direction * pair_gravity[:, None]
             new_momentum = solar_system.bodies.momentum.at[:, body1_idx].set(solar_system.bodies.momentum[:, body1_idx] + momentum_change)
@@ -102,14 +163,25 @@ def step_simulation(solar_system : SolarSystem) -> SolarSystem:
                     radius=solar_system.bodies.radius
                 )
             ) # I don't think this is slow despite looking like it. I think the compiler figures out it doesnt need to move mem around
+    
+    # get host planet's momentum update from the agent's response to the solar system
+    solar_system = apply_nuke(solar_system) # updates the solar system with a shift in the momentum of the agent planet
+
     # get position based off of momentum
     # for each object:
         # object.position += dt * object.momentum / object.mass
     for body_idx in range(solar_system.bodies.momentum.shape[1]):
+        true_velocity = solar_system.bodies.momentum[:, body_idx] / solar_system.bodies.mass[:, body_idx, None]
+        downscaled_velocity = conversion_to_downscaled_distance * true_velocity
+        downscaled_position_change = dt * downscaled_velocity
         new_position = solar_system.bodies.position.at[:, body_idx].set(
             solar_system.bodies.position[:, body_idx] +
-            dt * solar_system.bodies.momentum[:, body_idx] / (solar_system.bodies.mass[:, body_idx, None])
+            downscaled_position_change
         )
+        #new_position = solar_system.bodies.position.at[:, body_idx].set(
+        #    solar_system.bodies.position[:, body_idx] +
+        #    dt * solar_system.bodies.momentum[:, body_idx] / (solar_system.bodies.mass[:, body_idx, None])
+        #)
         solar_system = SolarSystem(
             bodies = SolarBody(
                 momentum = solar_system.bodies.momentum,
@@ -123,4 +195,6 @@ def step_simulation(solar_system : SolarSystem) -> SolarSystem:
 
 
 
-
+# to add
+# agent picks capped momentum update (agent just repeatedly picks 'up' for now)
+# 

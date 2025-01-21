@@ -2,10 +2,10 @@ import numpy as np
 import time
 import jax.random as jrand
 
-from environment import init_solarsystems, step_simulation, simulation_size, SolarSystem
+from environment import init_solarsystems, step_simulation, downscaled_simulation_size, SolarSystem
 
 WIDTH, HEIGHT = 800, 800
-SCALE = simulation_size
+SCALE = downscaled_simulation_size
 PLANET_COLOR = (200, 150, 0)
 SUN_COLOR = (255, 255, 0)
 GRID_COLOR = (200, 200, 200) 
@@ -16,11 +16,11 @@ GRID_LINES = 1  # Number of grid lines on each axis
 MIN_SUN_RADIUS = 0.05
 MIN_PLANET_RADIUS = 0.02
 SKYBOX = "galaxy2.png"  # This is the relative path to your skybox image
-suns = 5
-planets = 6 # code only supports one planet rn
+suns = 2
+planets = 10
 focal_length = 3.0 
 render = True
-simulations = 1_000_000  # Run n simulations simultaneously
+simulations = 1 #1_000_000  # Run n simulations simultaneously
 steps_per_simulation = 2_000
 if render:
     steps_per_simulation = 1_000_000
@@ -30,7 +30,7 @@ if render:
 
 
 key = jrand.PRNGKey(int(10000 * time.time()))
-solar_system = init_solarsystems(key, simulations, suns, planets)
+solar_system = init_solarsystems(key, simulations, planets, suns)
 
 # ---------------------------------------------------------------------
 # Initialize Pygame Display with an OpenGL context
