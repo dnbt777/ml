@@ -16,7 +16,7 @@ GRID_LINES = 1  # Number of grid lines on each axis
 MIN_SUN_RADIUS = 0.05
 MIN_PLANET_RADIUS = 0.02
 SKYBOX = "galaxy2.png"  # This is the relative path to your skybox image
-suns = 0
+suns = 3
 planets = 1
 focal_length = 3.0 
 render = True
@@ -107,7 +107,8 @@ running = True
 re_init = False
 while running:
     # Update simulation
-    solar_system = step_simulation(solar_system)
+    key = jrand.PRNGKey(int(time.time()*10))
+    solar_system = step_simulation(key, solar_system)
 
     if render:
         # ----------------------------------
@@ -258,7 +259,7 @@ while running:
         #re_init = True
     if re_init:
         key = jrand.PRNGKey(int(10000 * time.time()))
-        solar_system = init_solarsystems(key, simulations, suns, planets) # restart
+        solar_system = init_solarsystems(key, simulations, planets, suns) # restart
         if render:
             position_history = np.zeros((TRAIL_LENGTH, solar_system.bodies.position.shape[1], 3))
         re_init = False

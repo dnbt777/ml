@@ -10,7 +10,7 @@ import time
 # time: seconds
 
 G = 6.6743e-11 # N * (m^2) / (kg^2)
-dt = 3600 # seconds
+dt = 3600*24*7*52 # seconds
 
 class SolarBody(NamedTuple):
     position : jax.Array # B, 3
@@ -22,10 +22,10 @@ class SolarBody(NamedTuple):
 class SolarSystem(NamedTuple):
     bodies : List[SolarBody]
 
-true_sun_mass = 1.9e30 # uh
+true_sun_mass = 1.9e30 # our suns size
 true_sun_radius = 7e8
-true_planet_mass = 5.9e24
-true_simulation_size = 1.4e11 * 1 # meters
+true_planet_mass = 5.9e24 # earth
+true_simulation_size = 1.4e11 * 10 # meters # same size as our solar system
 
 downscaled_sun_radius = true_sun_radius / true_simulation_size
 downscaled_simulation_size = true_simulation_size / true_simulation_size
@@ -70,7 +70,7 @@ def init_solarsystems(key, batches, planets, suns):
 
     bodies = SolarBody(
         position=position,
-        momentum=jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=1) * mass[:, :, None] * 0.5, # force 0 momentum at start for now,
+        momentum=jrand.uniform(key, (batches, planets + suns, 3), minval=-0.5, maxval=0.5) * mass[:, :, None] * 1e3, # force 0 momentum at start for now,
         mass = mass,
         radius = downscaled_sun_radius * (mass / true_sun_mass),
     )
@@ -105,7 +105,7 @@ def direction_vector(bodies, body1_idx, body2_idx):
 
 
 @jax.jit
-def apply_nuke(solar_system : SolarSystem) -> SolarSystem:
+def apply_nuke_dummy_agent_1(key, solar_system : SolarSystem) -> SolarSystem:
     # get momentum change based on solar_system
     # agent(solar_system) -> first_planet_momentum_update
     # for now just do up in the y axis. i.e. [0, 1.0, 0]
@@ -124,7 +124,28 @@ def apply_nuke(solar_system : SolarSystem) -> SolarSystem:
 
 
 @jax.jit
-def step_simulation(solar_system : SolarSystem) -> SolarSystem:
+def apply_nuke_dummy_agent_2(key, solar_system : SolarSystem) -> SolarSystem:
+    # get momentum change based on solar_system
+    # agent(solar_system) -> first_planet_momentum_update
+    # for now just do up in the y axis. i.e. [0, 1.0, 0]
+    randspeed = 3000
+    momentum_shape = solar_system.bodies.momentum[:, 0].shape
+    first_planet_momentum_shift = randspeed * jrand.uniform(key, momentum_shape, minval=-1, maxval=1) * solar_system.bodies.mass[:, 0] # all batches, first planet * no batches (broadcast)
+    new_first_planet_momentum = solar_system.bodies.momentum[:, 0] + first_planet_momentum_shift
+    new_momentum = solar_system.bodies.momentum.at[:, 0].set(new_first_planet_momentum)
+    solar_system = SolarSystem(
+        bodies=SolarBody(
+            position = solar_system.bodies.position,
+            momentum = new_momentum,
+            mass = solar_system.bodies.mass,
+            radius = solar_system.bodies.radius
+        )
+    )
+    return solar_system
+
+
+@jax.jit
+def step_simulation(key, solar_system : SolarSystem) -> SolarSystem:
     # calculate momentum updates for each
     # f = ma = mv / dt
     # mv = f * dt
@@ -151,7 +172,7 @@ def step_simulation(solar_system : SolarSystem) -> SolarSystem:
             ) # I don't think this is slow despite looking like it. I think the compiler figures out it doesnt need to move mem around
     
     # get host planet's momentum update from the agent's response to the solar system
-    solar_system = apply_nuke(solar_system) # updates the solar system with a shift in the momentum of the agent planet
+    solar_system = apply_nuke_dummy_agent_2(key, solar_system) # updates the solar system with a shift in the momentum of the agent planet
 
     # get position based off of momentum
     # for each object:
