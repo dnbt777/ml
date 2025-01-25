@@ -10,7 +10,7 @@ import time
 # time: seconds
 
 G = 6.6743e-11 # N * (m^2) / (kg^2)
-dt = 3600*24*7*52 # seconds
+dt = 3600*24#*7*52 # seconds
 
 class SolarBody(NamedTuple):
     position : jax.Array # B, 3
@@ -63,9 +63,7 @@ def init_solarsystems(key, batches, planets, suns):
     # make 4 bodies and treat the first as the planet
     mass_scale = jrand.uniform(key, (batches, planets + suns,), minval=1/2, maxval=1)
     mass = mass_scale * jnp.array([true_planet_mass for _ in range(planets)] + [true_sun_mass for _ in range(suns)])[None, :]
-
     position = jrand.uniform(key, (batches, planets + suns, 3), minval=0, maxval=downscaled_simulation_size)
-
     #momentum_scale = optimal_starting_momentum(planets, suns)
 
     bodies = SolarBody(
