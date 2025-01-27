@@ -28,6 +28,7 @@ if render:
     simulations = 1
     TRAIL_LENGTH = 100 
     TRAIL_FADE = 0.01
+    lock_mouse = True
 
 
 key = jrand.PRNGKey(int(10000 * time.time()))
@@ -47,8 +48,9 @@ if render:
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.OPENGL | pygame.DOUBLEBUF)
     pygame.display.set_caption("Solar System Simulation")
-    #pygame.event.set_grab(True)
-    #pygame.mouse.set_visible(False)
+    if lock_mouse:
+        pygame.event.set_grab(True)
+        pygame.mouse.set_visible(False)
 
     font = pygame.font.SysFont("Arial", 18)  # Choose a font and size
     text_color = (255, 255, 255)

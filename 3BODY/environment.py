@@ -26,7 +26,7 @@ class SolarSystem(NamedTuple):
 true_sun_mass = 1.9e30 # our suns size
 true_sun_radius = 7e8
 true_planet_mass = 5.9e24 # earth
-true_simulation_size = 1.4e11 * 10 # meters # same size as our solar system
+true_simulation_size = 1.5e11 # meters # dist = from our sun to earth
 
 downscaled_sun_radius = true_sun_radius / true_simulation_size
 downscaled_simulation_size = true_simulation_size / true_simulation_size
@@ -216,6 +216,10 @@ def step_simulation(key, agent_forward, solar_system : SolarSystem) -> SolarSyst
 # agent picks capped momentum update (agent just repeatedly picks 'up' for now)
 # 
 
+# sqrt(x^2 + y^2 + z^2)
+def l2_norm(pos):
+    r = jnp.sqrt(jnp.sum(pos*pos, axis=-1))
+    return r
 
 
 def get_reward(solar_system : SolarSystem) -> float:
@@ -225,20 +229,22 @@ def get_reward(solar_system : SolarSystem) -> float:
     # heat is proportional to light. light is inverse square of distance
 
     # get the distances from the home planet at idx 0
-    relative_distances = solar_system.bodies.position - solar_system.bodies.position[:, 0]
-    
-    base_sun_wattage = 9000 #idk
+    relative_positions_from_home_planet = solar_system.bodies.position - solar_system.bodies.position[:, 0]
+    relative_true_distances_from_home_planet = l2_norm(relative_positions_from_home_planet)[:, 1:] * conversion_to_true_distance #get true distances
 
-    # get sum of inverse square of distances
-    inv_square = lambda r: (1 / (r + 1e-7))**2
-    inv_square_distances = jnp.sum(jax.lax.map(inv_square, relative_distances[:, 1:]), axis=-1) # (sim, n)
+    earth_wattage_per_sq_km = 1361
+    earth_dist_from_sun = 1.5e11 # meters
+
+    # get the ratio of sum of inverse square of distances to that of the earth to the sun
+    inv_square_dist_ratio = lambda r: (earth_dist_from_sun / (r + 1e-7))**2
+    inv_square_distance_ratios = jnp.sum(jax.lax.map(inv_square_dist_ratio, relative_true_distances_from_home_planet), axis=-1) # (sim, n)
 
     # goal wattage per square km: 1,361 (same as sun-earth relationship). do +/- 20% idk
-    wattage_per_square_km = base_sun_wattage * inv_square_distances
+    wattage_per_square_km = jnp.sum(earth_wattage_per_sq_km * inv_square_distance_ratios)
 
     ideal_wattage_per_square_km = 1361
 
     # simple reward based on distance from ideal wattage
-    reward = 1 - jax.nn.sigmoid(abs(ideal_wattage_per_square_km - wattage_per_square_km))
+    reward = 1 - abs(ideal_wattage_per_square_km - wattage_per_square_km) / ideal_wattage_per_square_km
 
-    return reward, (wattage_per_square_km, relative_distances)
+    return reward, (wattage_per_square_km, relative_true_distances_from_home_planet)
