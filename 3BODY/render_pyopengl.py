@@ -1,6 +1,7 @@
 import numpy as np
 import time
 import jax.random as jrand
+from deep_q import *
 
 from environment import init_solarsystems, step_simulation, downscaled_simulation_size, SolarSystem
 
@@ -31,6 +32,7 @@ if render:
 
 key = jrand.PRNGKey(int(10000 * time.time()))
 solar_system = init_solarsystems(key, simulations, planets, suns)
+agent_forward = init_dqn_agent()
 
 # ---------------------------------------------------------------------
 # Initialize Pygame Display with an OpenGL context
@@ -45,8 +47,11 @@ if render:
     pygame.init()
     screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.OPENGL | pygame.DOUBLEBUF)
     pygame.display.set_caption("Solar System Simulation")
-    pygame.event.set_grab(True)
-    pygame.mouse.set_visible(False)
+    #pygame.event.set_grab(True)
+    #pygame.mouse.set_visible(False)
+
+    font = pygame.font.SysFont("Arial", 18)  # Choose a font and size
+    text_color = (255, 255, 255)
 
     # Set up an orthographic projection (2D) that spans [0..WIDTH] x [0..HEIGHT].
     glViewport(0, 0, WIDTH, HEIGHT)
@@ -73,7 +78,6 @@ if render:
     glClear(GL_COLOR_BUFFER_BIT)
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-
     # ---------------------------------------------------------------------
     # Camera settings
     # ---------------------------------------------------------------------
@@ -93,9 +97,10 @@ if render:
     MAX_DISTANCE = 100.0  # Maximum zoom level
     camera_distance = 1.5
 
+    show_debug_menu = True
+
     # Main loop
     clock = pygame.time.Clock()
-
 
 
 sim_steps = 0
@@ -108,7 +113,7 @@ re_init = False
 while running:
     # Update simulation
     key = jrand.PRNGKey(int(time.time()*10))
-    solar_system = step_simulation(key, solar_system)
+    solar_system, reward, debug_data = step_simulation(key, agent_forward, solar_system)
 
     if render:
         # ----------------------------------
@@ -126,6 +131,8 @@ while running:
                     re_init = True
                 if event.key == pygame.K_SPACE:
                     camera_target_index = -1
+                if event.key == pygame.K_F3:
+                    show_debug_menu = not show_debug_menu # toggle debug menu MC style
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 if event.button == 1:  # Left mouse button
                     # Cycle through bodies and the origin
@@ -175,7 +182,6 @@ while running:
         # --------------------------------
         glClearColor(0.0, 0.0, 0.0, 1.0)
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
-        
 
         yaw_rad = np.radians(yaw)
         pitch_rad = np.radians(pitch)
@@ -237,6 +243,24 @@ while running:
         # 3) Draw the grid lines
         # --------------------------------
         draw_cube_edges(GRID_COLOR, SCALE)
+
+        # Create the text surface
+        if show_debug_menu:
+            text_lines = [
+                "",
+                f"Reward: {reward}",
+                f"Steps: {sim_steps}",
+                f"FPS: {int(clock.get_fps())}",
+                f"Debug Data:\n{debug_data}",
+            ]
+            text_surfaces = [font.render(line, True, text_color) for line in text_lines]
+
+            # Render each line at the top-left corner
+            for i, text_surface in enumerate(text_surfaces):
+                text_data = pygame.image.tostring(text_surface, "RGBA", True)
+                glWindowPos2d(10, HEIGHT - 10 - i * 20)  # Position text (10px margin, 20px line height)
+                glDrawPixels(text_surface.get_width(), text_surface.get_height(), GL_RGBA, GL_UNSIGNED_BYTE, text_data)
+
 
         # --------------------------------
         # Swap buffers, tick FPS

@@ -3,6 +3,8 @@ import jax.numpy as jnp
 import jax.random as jrand
 from typing import NamedTuple, List # for SoAs/parallelization
 import time
+from deep_q import *
+from functools import partial
 
 # units
 # distance: meters
@@ -17,8 +19,7 @@ class SolarBody(NamedTuple):
     momentum : jax.Array # B, 3
     mass : jax.Array # B, 1
     radius : jax.Array # B, 1
-
-
+# 
 class SolarSystem(NamedTuple):
     bodies : List[SolarBody]
 
@@ -83,17 +84,23 @@ def init_solarsystems(key, batches, planets, suns):
 def gravity(bodies, body1_idx, body2_idx):
     a = bodies.mass[:, body1_idx] * G
     b = bodies.mass[:, body2_idx]
-    c = dist_for_gravity(bodies, body1_idx, body2_idx)**2
+    c = true_dist(bodies, body1_idx, body2_idx)**2
     min_dist = bodies.radius[:, body1_idx] # prevents issues
     return a * (b / (c + min_dist))
 
 
 @jax.jit
-def dist_for_gravity(bodies, body1_idx, body2_idx):
+def true_dist(bodies, body1_idx, body2_idx):
     a = bodies.position[:, body2_idx] - bodies.position[:, body1_idx]
     a = jnp.sqrt(jnp.sum(a*a, axis=-1))
     return a * conversion_to_true_distance
 
+
+@jax.jit
+def sim_dist(bodies, body1_idx, body2_idx):
+    a = bodies.position[:, body2_idx] - bodies.position[:, body1_idx]
+    a = jnp.sqrt(jnp.sum(a*a, axis=-1))
+    return a
 
 @jax.jit
 def direction_vector(bodies, body1_idx, body2_idx):
@@ -142,8 +149,8 @@ def apply_nuke_dummy_agent_2(key, solar_system : SolarSystem) -> SolarSystem:
     return solar_system
 
 
-@jax.jit
-def step_simulation(key, solar_system : SolarSystem) -> SolarSystem:
+@partial(jax.jit, static_argnames=["agent_forward"])
+def step_simulation(key, agent_forward, solar_system : SolarSystem) -> SolarSystem:
     # calculate momentum updates for each
     # f = ma = mv / dt
     # mv = f * dt
@@ -170,13 +177,17 @@ def step_simulation(key, solar_system : SolarSystem) -> SolarSystem:
             ) # I don't think this is slow despite looking like it. I think the compiler figures out it doesnt need to move mem around
     
     # get host planet's momentum update from the agent's response to the solar system
-    solar_system = apply_nuke_dummy_agent_2(key, solar_system) # updates the solar system with a shift in the momentum of the agent planet
+    agent_momentum_shift = 100000*agent_forward(key, solar_system) * solar_system.bodies.mass[:, 0, None]
+    # updates the solar system with a shift in the momentum of the agent planet
 
     # get position based off of momentum
     # for each object:
         # object.position += dt * object.momentum / object.mass
     for body_idx in range(solar_system.bodies.momentum.shape[1]):
-        true_velocity = solar_system.bodies.momentum[:, body_idx] / solar_system.bodies.mass[:, body_idx, None]
+        if body_idx == 0:
+            true_velocity = (agent_momentum_shift + solar_system.bodies.momentum[:, 0]) / solar_system.bodies.mass[:, 0, None]
+        else:
+            true_velocity = solar_system.bodies.momentum[:, body_idx] / solar_system.bodies.mass[:, body_idx, None]
         downscaled_velocity = conversion_to_downscaled_distance * true_velocity
         downscaled_position_change = dt * downscaled_velocity
         new_position = solar_system.bodies.position.at[:, body_idx].set(
@@ -195,7 +206,8 @@ def step_simulation(key, solar_system : SolarSystem) -> SolarSystem:
                 radius=solar_system.bodies.radius
             )
         )
-    return solar_system
+    reward, debug_data = get_reward(solar_system)
+    return solar_system, reward, debug_data
 
 
 
@@ -203,3 +215,30 @@ def step_simulation(key, solar_system : SolarSystem) -> SolarSystem:
 # to add
 # agent picks capped momentum update (agent just repeatedly picks 'up' for now)
 # 
+
+
+
+def get_reward(solar_system : SolarSystem) -> float:
+    # takes in the current state and determines the reward
+    # for now: is the planet too far from a sun? too close? etc
+    # calculate heat
+    # heat is proportional to light. light is inverse square of distance
+
+    # get the distances from the home planet at idx 0
+    relative_distances = solar_system.bodies.position - solar_system.bodies.position[:, 0]
+    
+    base_sun_wattage = 9000 #idk
+
+    # get sum of inverse square of distances
+    inv_square = lambda r: (1 / (r + 1e-7))**2
+    inv_square_distances = jnp.sum(jax.lax.map(inv_square, relative_distances[:, 1:]), axis=-1) # (sim, n)
+
+    # goal wattage per square km: 1,361 (same as sun-earth relationship). do +/- 20% idk
+    wattage_per_square_km = base_sun_wattage * inv_square_distances
+
+    ideal_wattage_per_square_km = 1361
+
+    # simple reward based on distance from ideal wattage
+    reward = 1 - jax.nn.sigmoid(abs(ideal_wattage_per_square_km - wattage_per_square_km))
+
+    return reward, (wattage_per_square_km, relative_distances)
