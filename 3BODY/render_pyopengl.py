@@ -1,7 +1,7 @@
 import numpy as np
 import time
 import jax.random as jrand
-from deep_q import *
+from GRPO import *
 
 from environment import init_solarsystems, step_simulation, downscaled_simulation_size, SolarSystem
 
@@ -33,7 +33,7 @@ if render:
 
 key = jrand.PRNGKey(int(10000 * time.time()))
 solar_system = init_solarsystems(key, simulations, planets, suns)
-agent_forward = init_dqn_agent()
+agent_forward = init_agent() # returns the agent forward function
 
 # ---------------------------------------------------------------------
 # Initialize Pygame Display with an OpenGL context

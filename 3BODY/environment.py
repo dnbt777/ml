@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as jrand
 from typing import NamedTuple, List # for SoAs/parallelization
 import time
-from deep_q import *
+from GRPO import *
 from functools import partial
 
 # units
@@ -248,3 +248,9 @@ def get_reward(solar_system : SolarSystem) -> float:
     reward = 1 - abs(ideal_wattage_per_square_km - wattage_per_square_km) / ideal_wattage_per_square_km
 
     return reward, (wattage_per_square_km, relative_true_distances_from_home_planet)
+
+
+
+
+def get_loss(key, agent_forward, solar_system):
+    solar_system, reward, debug_data = step_simulation(key, agent_forward, solar_system)
