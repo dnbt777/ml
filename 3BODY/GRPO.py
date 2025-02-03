@@ -125,29 +125,31 @@ G = 100
 episode_steps = 2000 # run simulation for n steps
 # logprob_ratios = []
 # end_rewards = []
-# for g in G:
-for g in range(G):
-    # init new state
-    batches = 1 # turn into G batches
-    solar_systems = init_solarsystems(key, batches, planets, suns)
-    # old_logprobs_g = []
-    # new_logprobs_g = []
-    # for step in range 2000:
-    for step in range(episode_steps):
-        # old_policy_logprobs = old_policy(state)
-        # new_policy_logprobs = new_policy(state)
-        old_policy_step = old_policy_model(solar_systems) # (batches, actions)
-        new_policy_step = new_policy_model(solar_systems)
-        # old_logprobs_g.append(old_policy_logprobs)
-        # new_logprobs_g.append(new_policy_logprobs)
-        old_policy[:, step] = old_policy_step # stores logprobs of actions for each steo for each batch. (batches, step, actions)
-        new_policy[:, step] = new_policy_step # in the future: (batches, g, step, actions)
-        # action = rand.choice(p=old_policy_logprobs)
-        action = np.rand.weighted_choice(range(output_actions), p=old_policy_step) # (batches,)
-        # state = take_step(state, action)
-        solar_systems = step_simulation(key, lambda *args: action, solar_systems)
-    # end_reward = reward(state)
-    # end_rewards.append(end_reward)
-# advantages = (end_rewards - avg(end_rewards)) / standard_deviation(end_rewards)
-# loss = - (1/G) * (1/2000) * sum_across_G(sum_across_steps((min(logprob_ratios * advantages.extend(), min(logprob_ratios, 1 + epsilon, 1 - epsilon)) - kl_divergence)))
-# policy += learning_rate * jax.grad(loss_func)(policy)
+for train_iter in range(train_iters):
+  # for g in G:
+  for g in range(G):
+      # init new state
+      batches = 1 # turn into G batches
+      solar_systems = init_solarsystems(key, batches, planets, suns)
+      # old_logprobs_g = []
+      # new_logprobs_g = []
+      # for step in range 2000:
+      for step in range(episode_steps):
+          # old_policy_logprobs = old_policy(state)
+          # new_policy_logprobs = new_policy(state)
+          old_policy_step = take_action(key, old_policy_model, solar_systems) # (batches, actions)
+          new_policy_step = take_action(key, new_policy_model, solar_systems)
+          # old_logprobs_g.append(old_policy_logprobs)
+          # new_logprobs_g.append(new_policy_logprobs)
+          old_policy[:, step] = old_policy_step # stores logprobs of actions for each steo for each batch. (batches, step, actions)
+          new_policy[:, step] = new_policy_step # in the future: (batches, g, step, actions)
+          # action = rand.choice(p=old_policy_logprobs)
+          action = np.rand.weighted_choice(range(output_actions), p=old_policy_step) # (batches,)
+          # state = take_step(state, action)
+          solar_systems = step_simulation(key, lambda *args: action, solar_systems)
+      # end_reward = reward(state)
+      end_reward[:, g], _ = get_reward(solar_systems) # (batch, g)
+  # advantages = (end_rewards - avg(end_rewards)) / standard_deviation(end_rewards)
+  advantages = (end_reward - jnp.mean(end_reward, axis=-1, keepdims=True)) / jnp.std(end_reward, axis=-1, keepdims=True) # (batch, g)
+  # loss = - (1/G) * (1/2000) * sum_across_G(sum_across_steps((min(logprob_ratios * advantages.extend(), min(logprob_ratios, 1 + epsilon, 1 - epsilon)) - kl_divergence)))
+  # policy += learning_rate * jax.grad(loss_func)(policy)
