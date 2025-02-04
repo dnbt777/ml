@@ -62,7 +62,7 @@ for train_iter in range(train_iters):
             action = jrand.choice(key, range(output_actions), p=old_policy_step) # (batches,)
             # state = take_step(state, action)
             key, _ = jrand.split(key, 2) # roll key
-            solar_systems = step_simulation(key, action, solar_systems)
+            solar_systems = step_simulation(solar_systems, action)
         # end_reward = reward(state)
         end_reward[:, g] = end_reward.at[:, g].set(get_reward(solar_systems)) # (batch, g)
     # advantages = (end_rewards - avg(end_rewards)) / standard_deviation(end_rewards)
@@ -71,7 +71,7 @@ for train_iter in range(train_iters):
     advantages = advantages[:, :, None, None] # (batch, g, trajectory_steps, logprobs)
     logprob_ratios = new_policy / (old_policy + 1e-7)
     kl_divergence = old_policy / (new_policy + 1e-7) - jnp.log(old_policy / (new_policy + 1e-7)) - 1
-    loss = - (1/G) * (1/trajectory_steps) * jnp.sum(
+    loss = -(1/G) * (1/trajectory_steps) * jnp.sum(
       jnp.min(
         logprob_ratios * advantages,
         jnp.clip(logprob_ratios, 1 + epsilon, 1 - epsilon) * advantages

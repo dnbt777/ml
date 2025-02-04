@@ -152,18 +152,18 @@ def apply_nuke_dummy_agent_2(key, solar_system : SolarSystem) -> SolarSystem:
 @jax.jit
 def get_momentum_unit_vector_from_action(action):
     return jnp.array([
+        [0, 0, 0],
         [1, 0, 0],
         [-1, 0, 0],
         [0, 1, 0],
         [0, -1, 0],
         [0, 0, 1],
         [0, 0, -1],
-        [0, 0, 0],
     ], dtype=jnp.float32)[action]
 
 
-@partial(jax.jit, static_argnames=["agent_forward"])
-def step_simulation(key, action, solar_system : SolarSystem) -> SolarSystem:
+@jax.jit
+def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
     # calculate momentum updates for each
     # f = ma = mv / dt
     # mv = f * dt
@@ -220,8 +220,8 @@ def step_simulation(key, action, solar_system : SolarSystem) -> SolarSystem:
                 radius=solar_system.bodies.radius
             )
         )
-    reward, debug_data = get_reward(solar_system)
-    return solar_system, reward, debug_data
+    # debug_data = get_state_info(solar_system)
+    return solar_system #, reward
 
 
 
@@ -231,11 +231,12 @@ def step_simulation(key, action, solar_system : SolarSystem) -> SolarSystem:
 # 
 
 # sqrt(x^2 + y^2 + z^2)
+@jax.jit
 def l2_norm(pos):
     r = jnp.sqrt(jnp.sum(pos*pos, axis=-1))
     return r
 
-
+@jax.jit
 def get_reward(solar_system : SolarSystem) -> float:
     # takes in the current state and determines the reward
     # for now: is the planet too far from a sun? too close? etc
@@ -263,6 +264,36 @@ def get_reward(solar_system : SolarSystem) -> float:
 
     return reward #, (wattage_per_square_km, relative_true_distances_from_home_planet)
 
+
+
+
+@jax.jit
+def get_state_summary(solar_system : SolarSystem) -> float:
+    # takes in the current state and determines the reward
+    # for now: is the planet too far from a sun? too close? etc
+    # calculate heat
+    # heat is proportional to light. light is inverse square of distance
+
+    # get the distances from the home planet at idx 0
+    relative_positions_from_home_planet = solar_system.bodies.position - solar_system.bodies.position[:, 0]
+    relative_true_distances_from_home_planet = l2_norm(relative_positions_from_home_planet)[:, 1:] * conversion_to_true_distance #get true distances
+
+    earth_wattage_per_sq_km = 1361
+    earth_dist_from_sun = 1.5e11 # meters
+
+    # get the ratio of sum of inverse square of distances to that of the earth to the sun
+    inv_square_dist_ratio = lambda r: (earth_dist_from_sun / (r + 1e-7))**2
+    inv_square_distance_ratios = jnp.sum(jax.lax.map(inv_square_dist_ratio, relative_true_distances_from_home_planet), axis=-1) # (sim, n)
+
+    # goal wattage per square km: 1,361 (same as sun-earth relationship). do +/- 20% idk
+    wattage_per_square_km = jnp.sum(earth_wattage_per_sq_km * inv_square_distance_ratios)
+
+    ideal_wattage_per_square_km = 1361
+
+    # simple reward based on distance from ideal wattage
+    reward = 1 - abs(ideal_wattage_per_square_km - wattage_per_square_km) / ideal_wattage_per_square_km
+
+    return (wattage_per_square_km, relative_true_distances_from_home_planet)
 
 
 

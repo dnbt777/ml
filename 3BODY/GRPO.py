@@ -28,7 +28,8 @@ class PMParams(NamedTuple):
 
 hidden_size = 16
 hidden_layers = 10
-
+input_size = 3*4 + 3*4 + 1*4
+output_size = 7
 
 def init_policy_model(hidden_layers, hidden_size, input_size, output_size):
   initializer = jax.nn.initializers.glorot_uniform()
@@ -49,12 +50,6 @@ def init_policy_model(hidden_layers, hidden_size, input_size, output_size):
     wo = initializer(key, output_shape_w),
     bo = jnp.zeros(output_shape_b)
   )
-
-# returns 'agent_forward' function. basically it returns inference() func
-def init_agent():
-  dqnparams = init_policy_model(hidden_layers, hidden_size, 3*4 + 3*4 + 1*4, 6)
-  agent_forward = lambda key, current_state: take_action(key, dqnparams, current_state)
-  return agent_forward
 
 
 # move to environment or environment_utils idk
@@ -86,17 +81,8 @@ def take_action(key, policy_model_params : PMParams, current_state):
   x = jax.lax.scan(scanf, x, (policy_model_params.hidden_layers))[0] # scan => (x, None)
   x = jax.nn.relu(x @ policy_model_params.wo + policy_model_params.bo)
 
-  # choose highest value action
-  # choices are comprised of possible momentum shifts
-  action_index = jnp.argmax(x)
-  action = jnp.array([
-    (1, 0, 0),
-    (-1, 0, 0),
-    (0, 1, 0),
-    (0, -1, 0),
-    (0, 0, 1),
-    (0, 0, -1)
-  ])[action_index]
-  return jnp.array(action)
+  # randomly choose action from policy
+  action = jrand.choice(key, policy_model_params.bo.shape[0], p=jax.nn.softmax(x))
+  return action
 
 

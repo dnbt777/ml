@@ -3,7 +3,7 @@ import time
 import jax.random as jrand
 from GRPO import *
 
-from environment import init_solarsystems, step_simulation, downscaled_simulation_size, SolarSystem
+from environment import init_solarsystems, step_simulation, downscaled_simulation_size, get_reward, get_state_summary
 
 WIDTH, HEIGHT = 800, 800
 SCALE = downscaled_simulation_size
@@ -33,7 +33,11 @@ if render:
 
 key = jrand.PRNGKey(int(10000 * time.time()))
 solar_system = init_solarsystems(key, simulations, planets, suns)
-agent_forward = init_agent() # returns the agent forward function
+hidden_size = 16
+hidden_layers = 10
+input_datapoints = 3*4 + 3*4 + 1*4
+output_actions = 7 # lr/ud/bf/nothing
+policy_model_params = init_policy_model(hidden_layers, hidden_size, input_datapoints, output_actions)
 
 # ---------------------------------------------------------------------
 # Initialize Pygame Display with an OpenGL context
@@ -115,7 +119,11 @@ re_init = False
 while running:
     # Update simulation
     key = jrand.PRNGKey(int(time.time()*10))
-    solar_system, reward, debug_data = step_simulation(key, agent_forward, solar_system)
+    action = take_action(key, policy_model_params, solar_system)
+    key, _ = jrand.split(key, 2)
+    solar_system = step_simulation(solar_system, action)
+    reward = get_reward(solar_system)
+    debug_data = get_state_summary(solar_system) # todo, was removed
 
     if render:
         # ----------------------------------
