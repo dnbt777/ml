@@ -64,9 +64,9 @@ def concat_current_state(solar_system_batch):
 
 # init model params(input=total, hidden layers, output=6 (udlrbf for now))
 
-# pretrained. no epsilon
+
 @jax.jit
-def take_action(key, policy_model_params : PMParams, current_state):
+def get_decision_logits(policy_model_params : PMParams, current_state):
   # input:
   # 4 bodies:
   # 4 x (x, y, z) = 12
@@ -80,9 +80,22 @@ def take_action(key, policy_model_params : PMParams, current_state):
   scanf = lambda x, hidden_layer : (jax.nn.relu(x @ hidden_layer.weight + hidden_layer.bias), None)
   x = jax.lax.scan(scanf, x, (policy_model_params.hidden_layers))[0] # scan => (x, None)
   x = jax.nn.relu(x @ policy_model_params.wo + policy_model_params.bo)
+  return x
 
+
+@jax.jit
+def get_decision_probs(policy_model_params : PMParams, current_state):
+  x = get_decision_logits(policy_model_params, current_state)
+  p = jax.nn.softmax(x)
+  return p
+
+
+# pretrained. no epsilon
+@jax.jit
+def take_action(key, policy_model_params : PMParams, current_state):
+  logits = get_decision_logits(policy_model_params, current_state)
   # randomly choose action from policy
-  action = jrand.choice(key, policy_model_params.bo.shape[0], p=jax.nn.softmax(x))
+  action = jrand.categorical(key, logits, axis=-1)
   return action
 
 

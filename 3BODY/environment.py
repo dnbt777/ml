@@ -41,8 +41,8 @@ conversion_to_true_distance = true_simulation_size / downscaled_simulation_size
 debug = False
 if debug:
     jax.config.update("jax_disable_jit", True)
-jax.config.update("jax_debug_nans", True)
-jax.config.update("jax_debug_infs", True)
+    jax.config.update("jax_debug_nans", True)
+    jax.config.update("jax_debug_infs", True)
 
 
 
