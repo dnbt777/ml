@@ -26,11 +26,6 @@ class PMParams(NamedTuple):
   hidden_layers : List[PMLayer] # do it this way for scanning
 
 
-hidden_size = 16
-hidden_layers = 10
-input_size = 3*4 + 3*4 + 1*4
-output_size = 7
-
 def init_policy_model(hidden_layers, hidden_size, input_size, output_size):
   initializer = jax.nn.initializers.glorot_uniform()
   key = jrand.PRNGKey(int(time.time()*10000))
