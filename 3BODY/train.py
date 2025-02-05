@@ -32,59 +32,7 @@ key = jrand.PRNGKey(0) # init rolling key
 
 
 # outcome supervision
-@jax.jit
-def get_loss_old(new_policy, key,
-             G=G, epsilon=epsilon, trajectory_steps=10,
-             planets=planets, suns=suns):
-    batches = 1 # turn into G batches
-    policy_shape = (batches, G, trajectory_steps, output_actions)
-    old_policy = jnp.zeros(policy_shape) # store the decisions made at each step, for each g, for each batch
-    new_policy = jnp.zeros(policy_shape)
-    end_reward = jnp.zeros((batches, G))
-    for g in range(G):
-        # init new state
-        key, _ = jrand.split(key, 2) # roll key
-        solar_systems = init_solarsystems(key, batches, planets, suns)
-        # old_probs_g = [] # end result shape will be (batch, g, trajectory_step, action_probs)
-        # new_probs_g = [] # in the future i may combine batch and g...
 
-        # for step in range 2000:
-        for step in range(trajectory_steps):
-            # old_policy_probs = old_policy(state)
-            # new_policy_probs = new_policy(state)
-            old_policy_step = get_decision_probs(old_policy_model_params, solar_systems) # (batches, actions)
-            new_policy_step = get_decision_probs(new_policy_model_params, solar_systems)
-            # old_probs_g.append(old_policy_probs)
-            # new_probs_g.append(new_policy_probs)
-            old_policy = old_policy.at[:, step].set(old_policy_step) # stores probs of actions for each steo for each batch. (batches, step, actions)
-            new_policy = new_policy.at[:, step].set(new_policy_step) # in the future: (batches, g, step, actions)
-              # action = rand.choice(p=old_policy_probs)
-            import numpy as np # temp, replace with jax and a key
-            key, _ = jrand.split(key, 2) # roll key
-            action = jrand.categorical(key, old_policy_step, axis=-1) # (batches,)
-            # state = take_step(state, action)
-            key, _ = jrand.split(key, 2) # roll key
-            solar_systems = step_simulation(solar_systems, action)
-        # end_reward = reward(state)
-        end_reward = end_reward.at[:, g].set(get_reward(solar_systems)) # (batch, g)
-    # advantages = (end_rewards - avg(end_rewards)) / standard_deviation(end_rewards)
-    advantages = (end_reward - jnp.mean(end_reward, axis=-1, keepdims=True)) / jnp.std(end_reward, axis=-1, keepdims=True) # (batch, g)
-    # loss = - (1/G) * (1/2000) * sum_across_G(sum_across_steps((min(prob_ratios * advantages.extend(), min(prob_ratios, 1 + epsilon, 1 - epsilon)) - kl_divergence)))
-    advantages = advantages[:, :, None, None] # (batch, g, trajectory_steps, probs)
-    prob_ratios = new_policy / (old_policy + 1e-7)
-    kl_divergence = old_policy / (new_policy + 1e-7) - jnp.log(old_policy + 1e-7) - jnp.log(new_policy + 1e-7) - 1
-
-    # get loss for each g
-    xa = prob_ratios * advantages
-    xb = jnp.clip(prob_ratios, 1 + epsilon, 1 - epsilon) * advantages
-    xc = jnp.minimum(xa,xb)
-    xd = xc - kl_divergence
-    xe = jnp.sum(xd, axis=-1) # across logit axis (batch, g, step, logit) => (batch, g, step) 
-    xf = jnp.sum(xe, axis=-1) * (1/trajectory_steps) # across step axis (batch, g, step) => (batch, g) -- get loss for each g
-    xg = jnp.sum(xf, axis=-1) * (1/G) # across g axis (batch, g) => batch. get loss for each batch.
-    xh = jnp.sum(xg, axis=-1) # combine all batch losses.
-    loss = -xh
-    return loss
 
 # todo
   # loop -> scan for:
