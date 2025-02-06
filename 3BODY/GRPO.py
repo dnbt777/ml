@@ -25,7 +25,7 @@ class PMParams(NamedTuple):
   bo : jax.Array
   hidden_layers : List[PMLayer] # do it this way for scanning
 
-
+# @jax.jit # breaks :(
 def init_policy_model(hidden_layers, hidden_size, input_size, output_size):
   initializer = jax.nn.initializers.glorot_uniform()
   key = jrand.PRNGKey(int(time.time()*10000))
@@ -48,11 +48,21 @@ def init_policy_model(hidden_layers, hidden_size, input_size, output_size):
 
 
 # move to environment or environment_utils idk
+# TODO: store velocities rather than momentum. requires changing the simulation but not by much. (massless momentum)
+# reason: prevents infs in momentum. then, use velocities as an input to the neural net. should be MUCH smaller.
+# then: use log(mass) as an input to the NN as well.
+@jax.jit
 def concat_current_state(solar_system_batch):
+  momentum = jnp.ravel(solar_system_batch.bodies.momentum) # should just be divided by planet mass tbh, this is a hack
+  momentum = (momentum - jnp.mean(momentum, axis=-1, keepdims=True)) / jnp.std(momentum, axis=-1, keepdims=True) 
+
+  mass = jnp.ravel(solar_system_batch.bodies.mass)
+  mass = (mass - jnp.mean(mass, axis=-1, keepdims=True)) / jnp.std(mass, axis=-1, keepdims=True) # constant transform, does not need to be recalculated
+
   return jax.lax.concatenate([
-    jnp.ravel(solar_system_batch.bodies.position),
-    jnp.ravel(solar_system_batch.bodies.momentum),
-    jnp.ravel(solar_system_batch.bodies.mass) # this will break when batch size > 1
+    jnp.ravel(solar_system_batch.bodies.position), # should be relative/small
+    momentum, # log is temp to test perf improvement
+    mass # this will break when batch size > 1
     ],
     dimension=0
   )

@@ -38,13 +38,6 @@ conversion_to_true_distance = true_simulation_size / downscaled_simulation_size
 # momentum: true
 # distances (radius, sim size): downscaled
 
-debug = False
-if debug:
-    jax.config.update("jax_disable_jit", True)
-    jax.config.update("jax_debug_nans", True)
-    jax.config.update("jax_debug_infs", True)
-
-
 
 def optimal_starting_momentum(planets, suns):
     # best momentum for producing orbits ~= average gravity * radius? (think swinging ball on rope)

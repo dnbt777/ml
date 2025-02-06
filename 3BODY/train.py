@@ -15,56 +15,46 @@ from GRPO import get_decision_probs, init_policy_model
   # test with faster compile time. get it to train on batchsize=1
   # increase batch size... or just have large G and batchsize=1 forever
 
-
-
-
 @jax.jit
 def get_loss(new_policy_model_params, old_policy_model_params, key,
              G=16, epsilon=1e-3, trajectory_steps=200,
              planets=1, suns=3):
   batches = 1 # turn into G batches
 
-  @jax.jit
-  def run_single_trajectory_g(key):
+  def run_single_trajectory_g(trajectory_key):
     # init new state
-    key, _ = jrand.split(key, 2) # roll key
-    solar_systems = init_solarsystems(key, batches, planets, suns)
+    trajectory_key, _ = jrand.split(trajectory_key, 2) # roll key
+    solar_systems = init_solarsystems(trajectory_key, batches, planets, suns)
 
     # carry, [a] => (carry, [b])
     # state, None => (state, (old_policy_probs, new_policy_probs))
-    # state: key, solar_systems
+    # state: trajectory_key, solar_systems
     # [a]: None
-    @jax.jit
     def step_scanf(state, i):
-        solar_systems, key = state
+      solar_systems, scan_key = state
 
-        old_policy_step = get_decision_probs(old_policy_model_params, solar_systems) # (batches, actions)
-        new_policy_step = get_decision_probs(new_policy_model_params, solar_systems)
+      old_policy_step = get_decision_probs(old_policy_model_params, solar_systems) # (batches, actions)
+      new_policy_step = get_decision_probs(new_policy_model_params, solar_systems)
 
-        #old_policy = old_policy.at[:, step].set(old_policy_step) # stores probs of actions for each steo for each batch. (batches, step, actions)
-        #new_policy = new_policy.at[:, step].set(new_policy_step) # in the future: (batches, g, step, actions)
+      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
+      action = jrand.categorical(scan_key, old_policy_step, axis=-1) # (batches,)
 
-        key, _ = jrand.split(key, 2) # roll key
-        action = jrand.categorical(key, old_policy_step, axis=-1) # (batches,)
+      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
+      solar_systems = step_simulation(solar_systems, action)
+      return (solar_systems, scan_key), (old_policy_step, new_policy_step) # state, b
 
-        key, _ = jrand.split(key, 2) # roll key
-        solar_systems = step_simulation(solar_systems, action)
-        return (solar_systems, key), (old_policy_step, new_policy_step) # state, b
-  
     ## SCAN OVER SIM STEPS
     # pack
-    init_state = (solar_systems, key)
+    init_state = (solar_systems, trajectory_key)
     # scan
     state, policies = jax.lax.scan(step_scanf, init_state, None, length=trajectory_steps)
     # unpack
-    solar_systems, key = state
+    solar_systems, trajectory_key = state
     old_policy_trajectory_g, new_policy_trajectory_g = policies # may break. [b] is [(old_p_step, new_p_step)] not ([old_p_step], [new_p_step])
 
     # end_reward = reward(state)
     outcome_reward_g = get_reward(solar_systems) # (batch,)
-
     return old_policy_trajectory_g, new_policy_trajectory_g, outcome_reward_g
-
 
   random_keys = jrand.split(key, batches*G).reshape((batches, G, 2)) # one random key for each g in G. reshape 2 in final dim is the key size. (batch, G, key_data)
   #key_func = functools.partial(run_single_trajectory_g, new_policy_model_params)
@@ -111,21 +101,34 @@ new_policy_model_params = policy_model_params
 # policy model: the ML model
 # policy: the actual probs of the actions
 
-G = 16
+G = 16 # paper: 64 outputs
+# batch size= 1024 # paper
 trajectory_steps = 200 # run simulation for n steps
 
 epsilon = 1e-4 # for clipping
 train_iters = 100 # arbitrary. how long we want to train for
+dkl_beta = 0.04 # from paper
 key = jrand.PRNGKey(0) # init rolling key
 
 # train
+debug = False
+if debug:
+    jax.config.update("jax_disable_jit", True)
+    
+    #jax.config.update("jax_debug_infs", True)
+jax.config.update("jax_debug_nans", True)
 
 import time
 start = time.time()
 print("training")
 for train_iter in range(train_iters):
-  learning_rate = 0.001
+  learning_rate = 0.1
   key, _ = jrand.split(key, 2) # roll key
+  try:
+    loss = get_loss(new_policy_model_params, old_policy_model_params, key)
+  except:
+     jax.config.update("jax_disable_jit", True)
+     loss = get_loss(new_policy_model_params, old_policy_model_params, key)
   loss, grads = jax.value_and_grad(get_loss)(new_policy_model_params, old_policy_model_params, key)
   if train_iter == 0:
       jit_end = time.time()
