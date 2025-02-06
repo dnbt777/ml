@@ -16,7 +16,7 @@ dt = 3600*24#*7*52 # seconds
 
 class SolarBody(NamedTuple):
     position : jax.Array # B, 3
-    momentum : jax.Array # B, 3
+    velocity : jax.Array # B, 3
     mass : jax.Array # B, 1
     radius : jax.Array # B, 1
 # 
@@ -62,8 +62,8 @@ def init_solarsystems(key, batches, planets, suns):
 
     bodies = SolarBody(
         position=position,
-        momentum=jrand.uniform(key, (batches, planets + suns, 3), minval=-0.5, maxval=0.5) * mass[:, :, None], # velocity from -0.5 to 0.5 m/s
-        mass = mass,
+        velocity=jrand.uniform(key, (batches, planets + suns, 3), minval=-0.5, maxval=0.5), # velocity from -0.5 to 0.5 m/s
+        mass=mass,
         radius = downscaled_sun_radius * (mass / true_sun_mass),
     )
     # return the solar body
@@ -103,47 +103,7 @@ def direction_vector(bodies, body1_idx, body2_idx):
 
 
 @jax.jit
-def apply_nuke_dummy_agent_1(key, solar_system : SolarSystem) -> SolarSystem:
-    # get momentum change based on solar_system
-    # agent(solar_system) -> first_planet_momentum_update
-    # for now just do up in the y axis. i.e. [0, 1.0, 0]
-    first_planet_momentum_shift = jnp.ones_like(solar_system.bodies.momentum[:, 0]) * jnp.array([0, 100.0, 0])[None, :] * solar_system.bodies.mass[:, 0] # all batches, first planet * no batches (broadcast)
-    new_first_planet_momentum = solar_system.bodies.momentum[:, 0] + first_planet_momentum_shift
-    new_momentum = solar_system.bodies.momentum.at[:, 0].set(new_first_planet_momentum)
-    solar_system = SolarSystem(
-        bodies=SolarBody(
-            position = solar_system.bodies.position,
-            momentum = new_momentum,
-            mass = solar_system.bodies.mass,
-            radius = solar_system.bodies.radius
-        )
-    )
-    return solar_system
-
-
-@jax.jit
-def apply_nuke_dummy_agent_2(key, solar_system : SolarSystem) -> SolarSystem:
-    # get momentum change based on solar_system
-    # agent(solar_system) -> first_planet_momentum_update
-    # for now just do up in the y axis. i.e. [0, 1.0, 0]
-    randspeed = 3000
-    momentum_shape = solar_system.bodies.momentum[:, 0].shape
-    first_planet_momentum_shift = randspeed * jrand.uniform(key, momentum_shape, minval=-1, maxval=1) * solar_system.bodies.mass[:, 0] # all batches, first planet * no batches (broadcast)
-    new_first_planet_momentum = solar_system.bodies.momentum[:, 0] + first_planet_momentum_shift
-    new_momentum = solar_system.bodies.momentum.at[:, 0].set(new_first_planet_momentum)
-    solar_system = SolarSystem(
-        bodies=SolarBody(
-            position = solar_system.bodies.position,
-            momentum = new_momentum,
-            mass = solar_system.bodies.mass,
-            radius = solar_system.bodies.radius
-        )
-    )
-    return solar_system
-
-
-@jax.jit
-def get_momentum_unit_vector_from_action(action):
+def get_velocity_unit_vector_from_action(action):
     return jnp.array([
         [0, 0, 0],
         [1, 0, 0],
@@ -164,37 +124,37 @@ def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
         # f = m1 * m2 * G / r^2
         # for each object_i:
         #   for each other object_j:
-        #       object_j.momentum += dt * (object_i.mass * object_j.mass * G / dist(object_i, object_j)^2)
+        #       object_i.velocity += dt * (object_i.mass * object_j.mass * G / dist(object_i, object_j)^2) / object_i.mass
+                    # TODO cancel out the object_i.masses
     for body1_idx in range(solar_system.bodies.position.shape[1]):
         for body2_idx in range(solar_system.bodies.position.shape[1]):
             if body1_idx == body2_idx:
                 continue
             pair_gravity = gravity(solar_system.bodies, body1_idx, body2_idx)
             direction = direction_vector(solar_system.bodies, body1_idx, body2_idx)
-            momentum_change = dt * direction * pair_gravity[:, None]
-            new_momentum = solar_system.bodies.momentum.at[:, body1_idx].set(solar_system.bodies.momentum[:, body1_idx] + momentum_change)
+            velocity_change = dt * direction * pair_gravity[:, None] / solar_system.bodies.mass[:, body1_idx]
+            new_velocity = solar_system.bodies.velocity.at[:, body1_idx].set(solar_system.bodies.velocity[:, body1_idx] + velocity_change)
             solar_system = SolarSystem(
                 bodies = SolarBody(
-                    momentum = new_momentum,
+                    velocity = new_velocity,
                     position=solar_system.bodies.position,
                     mass=solar_system.bodies.mass,
                     radius=solar_system.bodies.radius
                 )
             ) # I don't think this is slow despite looking like it. I think the compiler figures out it doesnt need to move mem around
-    
     # get host planet's momentum update from the agent's response to the solar system
-    momentum_shift = get_momentum_unit_vector_from_action(action)
-    agent_momentum_shift = 100000*momentum_shift * solar_system.bodies.mass[:, 0, None]
+    velocity_shift = get_velocity_unit_vector_from_action(action)
+    agent_velocity_shift = 10000*velocity_shift
     # updates the solar system with a shift in the momentum of the agent planet
 
     # get position based off of momentum
     # for each object:
-        # object.position += dt * object.momentum / object.mass
-    for body_idx in range(solar_system.bodies.momentum.shape[1]):
+        # object.position += dt * object.velocity
+    for body_idx in range(solar_system.bodies.velocity.shape[1]):
         if body_idx == 0:
-            true_velocity = (agent_momentum_shift + solar_system.bodies.momentum[:, 0]) / solar_system.bodies.mass[:, 0, None]
+            true_velocity = (agent_velocity_shift + solar_system.bodies.velocity[:, 0])
         else:
-            true_velocity = solar_system.bodies.momentum[:, body_idx] / solar_system.bodies.mass[:, body_idx, None]
+            true_velocity = solar_system.bodies.velocity[:, body_idx]
         downscaled_velocity = conversion_to_downscaled_distance * true_velocity
         downscaled_position_change = dt * downscaled_velocity
         new_position = solar_system.bodies.position.at[:, body_idx].set(
@@ -203,11 +163,11 @@ def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
         )
         #new_position = solar_system.bodies.position.at[:, body_idx].set(
         #    solar_system.bodies.position[:, body_idx] +
-        #    dt * solar_system.bodies.momentum[:, body_idx] / (solar_system.bodies.mass[:, body_idx, None])
+        #    dt * solar_system.bodies.velocity[:, body_idx]
         #)
         solar_system = SolarSystem(
             bodies = SolarBody(
-                momentum = solar_system.bodies.momentum,
+                velocity = solar_system.bodies.velocity,
                 position=new_position,
                 mass=solar_system.bodies.mass,
                 radius=solar_system.bodies.radius
