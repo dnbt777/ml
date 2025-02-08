@@ -1,9 +1,11 @@
 import numpy as np
 import time
 import jax.random as jrand
-from GRPO import *
+import jax
 
 from environment import init_solarsystems, step_simulation, downscaled_simulation_size, get_reward, get_state_summary
+from GRPO import *
+from utils import load_model_params
 
 WIDTH, HEIGHT = 800, 800
 SCALE = downscaled_simulation_size
@@ -37,7 +39,11 @@ hidden_size = 16
 hidden_layers = 10
 input_datapoints = 3*4 + 3*4 + 1*4
 output_actions = 7 # lr/ud/bf/nothing
-policy_model_params = init_policy_model(hidden_layers, hidden_size, input_datapoints, output_actions)
+load_params_from_file = True
+if load_params_from_file:
+    policy_model_params = load_model_params("params.pkl")
+else:
+    policy_model_params = init_policy_model(hidden_layers, hidden_size, input_datapoints, output_actions)
 
 # ---------------------------------------------------------------------
 # Initialize Pygame Display with an OpenGL context
@@ -122,7 +128,7 @@ while running:
     action = take_action(key, policy_model_params, solar_system)
     key, _ = jrand.split(key, 2)
     solar_system = step_simulation(solar_system, action)
-    reward = get_reward(solar_system)
+    reward = jax.vmap(get_reward, in_axes=0)(solar_system)
     debug_data = get_state_summary(solar_system) # todo, was removed
 
     if render:
@@ -294,6 +300,7 @@ while running:
     if re_init:
         key = jrand.PRNGKey(int(10000 * time.time()))
         solar_system = init_solarsystems(key, simulations, planets, suns) # restart
+        sim_steps = 0
         if render:
             position_history = np.zeros((TRAIL_LENGTH, solar_system.bodies.position.shape[1], 3))
         re_init = False

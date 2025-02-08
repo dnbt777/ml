@@ -4,7 +4,7 @@ import jax.random as jrand
 from typing import NamedTuple, List # for SoAs/parallelization
 import time
 from GRPO import *
-from functools import partial
+import functools
 
 # units
 # distance: meters
@@ -38,7 +38,7 @@ conversion_to_true_distance = true_simulation_size / downscaled_simulation_size
 # momentum: true
 # distances (radius, sim size): downscaled
 
-
+# unused currently
 def optimal_starting_momentum(planets, suns):
     # best momentum for producing orbits ~= average gravity * radius? (think swinging ball on rope)
     # momentum = gravity
@@ -53,6 +53,7 @@ def optimal_starting_momentum(planets, suns):
 
 
 # jit because it gets reused to reinit the environment a lot
+@functools.partial(jax.jit, static_argnames=["batches", "planets", "suns"])
 def init_solarsystems(key, batches, planets, suns):
     # make 4 bodies and treat the first as the planet
     mass_scale = jrand.uniform(key, (batches, planets + suns,), minval=1/2, maxval=1)
@@ -62,7 +63,7 @@ def init_solarsystems(key, batches, planets, suns):
 
     bodies = SolarBody(
         position=position,
-        velocity=jrand.uniform(key, (batches, planets + suns, 3), minval=-0.5, maxval=0.5), # velocity from -0.5 to 0.5 m/s
+        velocity=jrand.uniform(key, (batches, planets + suns, 3), minval=-0.5, maxval=0.5) * 50000, # velocity from -0.5 to 0.5 m/s
         mass=mass,
         radius = downscaled_sun_radius * (mass / true_sun_mass),
     )
@@ -80,6 +81,16 @@ def gravity(bodies, body1_idx, body2_idx):
     c = true_dist(bodies, body1_idx, body2_idx)**2
     min_dist = bodies.radius[:, body1_idx] # prevents issues
     return a * (b / (c + min_dist))
+
+@jax.jit
+def acceleration(bodies, body1_idx, body2_idx):
+    # get the acceleration from gravity on body1.
+    # (object_i.mass * object_j.mass * G / dist(object_i, object_j)^2) / object_i.mass
+    # = object_j.mass * G / dist(object_i, object_j)^2)
+    b = bodies.mass[:, body2_idx] * G
+    c = true_dist(bodies, body1_idx, body2_idx)**2
+    eps = bodies.radius[:, body1_idx]
+    return b / (c + eps)
 
 
 @jax.jit
@@ -116,7 +127,7 @@ def get_velocity_unit_vector_from_action(action):
 
 
 @jax.jit
-def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
+def step_simulation_forloop(solar_system : SolarSystem, action) -> SolarSystem:
     # calculate momentum updates for each
     # f = ma = mv / dt
     # mv = f * dt
@@ -130,9 +141,9 @@ def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
         for body2_idx in range(solar_system.bodies.position.shape[1]):
             if body1_idx == body2_idx:
                 continue
-            pair_gravity = gravity(solar_system.bodies, body1_idx, body2_idx)
             direction = direction_vector(solar_system.bodies, body1_idx, body2_idx)
-            velocity_change = dt * direction * pair_gravity[:, None] / solar_system.bodies.mass[:, body1_idx]
+            acceleration_from_gravity = acceleration(solar_system.bodies, body1_idx, body2_idx)
+            velocity_change = dt * direction * acceleration_from_gravity
             new_velocity = solar_system.bodies.velocity.at[:, body1_idx].set(solar_system.bodies.velocity[:, body1_idx] + velocity_change)
             solar_system = SolarSystem(
                 bodies = SolarBody(
@@ -177,6 +188,75 @@ def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
     return solar_system #, reward
 
 
+@jax.jit
+def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
+    # calculate momentum updates for each
+    # f = ma = mv / dt
+    # mv = f * dt
+        # calculate force on each object
+        # f = m1 * m2 * G / r^2
+        # for each object_i:
+        #   for each other object_j:
+        #       object_i.velocity += dt * (object_i.mass * object_j.mass * G / dist(object_i, object_j)^2) / object_i.mass (object_i cancels)
+    
+    # for loop -> vmap across indexes
+    #def velocity_updates(body1_idx, body2_idx):
+    n = solar_system.bodies.position.shape[1]
+    body1_idxs = jnp.arange(n)
+    body2_idxs = jnp.tile(jnp.arange(n-1), n).reshape(n, n-1) + jnp.triu(jnp.ones((n, n-1)))
+
+        
+    for body1_idx in range(solar_system.bodies.position.shape[1]):
+        velocity_change = jnp.zeros_like(solar_system.bodies.velocity[:, body1_idx])
+        for body2_idx in range(solar_system.bodies.position.shape[1]):
+            if body1_idx == body2_idx:
+                continue
+            direction = direction_vector(solar_system.bodies, body1_idx, body2_idx)
+            acceleration_from_gravity = acceleration(solar_system.bodies, body1_idx, body2_idx)
+            # vec(batch, 3) = vec(batch, 3) + scalar*vec(batch, 3)*scalar(batch, 1)
+            velocity_change = velocity_change + (dt * direction * acceleration_from_gravity[:, None])
+        new_velocity = solar_system.bodies.velocity.at[:, body1_idx].set(solar_system.bodies.velocity[:, body1_idx] + velocity_change)
+        solar_system = SolarSystem(
+            bodies = SolarBody(
+                velocity = new_velocity,
+                position=solar_system.bodies.position,
+                mass=solar_system.bodies.mass,
+                radius=solar_system.bodies.radius
+            )
+        ) # I don't think this is slow despite looking like it. I think the compiler figures out it doesnt need to move mem around
+    # get host planet's momentum update from the agent's response to the solar system
+    velocity_shift = get_velocity_unit_vector_from_action(action)
+    agent_velocity_shift = 1000000*velocity_shift
+    # updates the solar system with a shift in the momentum of the agent planet
+
+    # get position based off of momentum
+    # for each object:
+        # object.position += dt * object.velocity
+    for body_idx in range(solar_system.bodies.velocity.shape[1]):
+        if body_idx == 0:
+            true_velocity = (agent_velocity_shift + solar_system.bodies.velocity[:, 0])
+        else:
+            true_velocity = solar_system.bodies.velocity[:, body_idx]
+        downscaled_velocity = conversion_to_downscaled_distance * true_velocity
+        downscaled_position_change = dt * downscaled_velocity
+        new_position = solar_system.bodies.position.at[:, body_idx].set(
+            solar_system.bodies.position[:, body_idx] +
+            downscaled_position_change
+        )
+        #new_position = solar_system.bodies.position.at[:, body_idx].set(
+        #    solar_system.bodies.position[:, body_idx] +
+        #    dt * solar_system.bodies.velocity[:, body_idx]
+        #)
+        solar_system = SolarSystem(
+            bodies = SolarBody(
+                velocity = solar_system.bodies.velocity,
+                position=new_position,
+                mass=solar_system.bodies.mass,
+                radius=solar_system.bodies.radius
+            )
+        )
+    # debug_data = get_state_info(solar_system)
+    return solar_system #, reward
 
 
 # to add
@@ -197,8 +277,10 @@ def get_reward(solar_system : SolarSystem) -> float:
     # heat is proportional to light. light is inverse square of distance
 
     # get the distances from the home planet at idx 0
-    relative_positions_from_home_planet = solar_system.bodies.position - solar_system.bodies.position[:, 0]
-    relative_true_distances_from_home_planet = l2_norm(relative_positions_from_home_planet)[:, 1:] * conversion_to_true_distance #get true distances
+    home_planet_position = solar_system.bodies.position[0] # first planet's position (0:1 retains final dim)
+    # home_planet_position = jnp.expand_dims(solar_system.bodies.position[:, 0, :], axis=1) # also works
+    relative_positions_from_home_planet = solar_system.bodies.position - home_planet_position
+    relative_true_distances_from_home_planet = l2_norm(relative_positions_from_home_planet)[1:] * conversion_to_true_distance #get true distances
 
     earth_wattage_per_sq_km = 1361
     earth_dist_from_sun = 1.5e11 # meters
@@ -212,10 +294,17 @@ def get_reward(solar_system : SolarSystem) -> float:
 
     ideal_wattage_per_square_km = 1361
 
-    # simple reward based on distance from ideal wattage
-    reward = 1 - abs(ideal_wattage_per_square_km - wattage_per_square_km) / ideal_wattage_per_square_km
+    death_by_heat_wattage = 2 * ideal_wattage_per_square_km
+    death_by_freezing_wattage = ideal_wattage_per_square_km / 2
 
-    return reward #, (wattage_per_square_km, relative_true_distances_from_home_planet)
+
+
+    # simple reward based on distance from ideal wattage (goldilocks zone)
+    temp_margin = ideal_wattage_per_square_km/4
+    T_rel = wattage_per_square_km - ideal_wattage_per_square_km
+    reward = jax.nn.relu(1 - jnp.abs(T_rel)/temp_margin)
+
+    return reward
 
 
 

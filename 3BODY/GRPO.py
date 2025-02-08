@@ -48,26 +48,26 @@ def init_policy_model(hidden_layers, hidden_size, input_size, output_size):
 
 
 # move to environment or environment_utils idk
-# TODO: store velocities rather than momentum. requires changing the simulation but not by much. (massless momentum)
-# reason: prevents infs in momentum. then, use velocities as an input to the neural net. should be MUCH smaller.
-# then: use log(mass) as an input to the NN as well.
 @jax.jit
 def concat_current_state(solar_system_batch):
-  velocity = jnp.ravel(solar_system_batch.bodies.velocity) # should just be divided by planet mass tbh, this is a hack
-  velocity = (velocity - jnp.mean(velocity, axis=-1, keepdims=True)) / jnp.std(velocity, axis=-1, keepdims=True) 
+  velocity = jnp.ravel(solar_system_batch.bodies.velocity)
+  #norm_velocity = (velocity - jnp.mean(velocity, axis=-1, keepdims=True)) / jnp.std(velocity, axis=-1, keepdims=True) 
+  # reason for disabling norm velocity: velocity needs to be precise, like position
+  # should be false velocity? divide by sim size maybe? hmm...
 
   mass = jnp.ravel(solar_system_batch.bodies.mass)
-  mass = (mass - jnp.mean(mass, axis=-1, keepdims=True)) / jnp.std(mass, axis=-1, keepdims=True) # constant transform, does not need to be recalculated
+  #norm_mass = (mass - jnp.mean(mass, axis=-1, keepdims=True)) / jnp.std(mass, axis=-1, keepdims=True) # constant transform, does not need to be recalculated
+  log_mass = jnp.log(mass)
+
+  position = jnp.ravel(solar_system_batch.bodies.position) # not true position, but sim position. should be fine
 
   return jax.lax.concatenate([
-    jnp.ravel(solar_system_batch.bodies.position), # should be relative/small
-    velocity, # log is temp to test perf improvement
-    mass # this will break when batch size > 1
+    position, # should be relative/small
+    velocity,
+    log_mass
     ],
     dimension=0
   )
-
-# init model params(input=total, hidden layers, output=6 (udlrbf for now))
 
 
 @jax.jit
@@ -75,11 +75,11 @@ def get_decision_logits(policy_model_params : PMParams, current_state):
   # input:
   # 4 bodies:
   # 4 x (x, y, z) = 12
-  # 4 x (mx, my, mz) = 12
+  # 4 x (v, v, v) = 12
   # 4 x (mass) = 4
   # ignore radius stuff
-  # total = 4*12 + 4*12 + 4 = 100
-  concatted = concat_current_state(current_state)
+  # total = 12 + 12 + 4 = (batchsize, 28)
+  concatted = jax.vmap(concat_current_state, in_axes=0)(current_state) # vmap across batch axis - this is the way to go, as opposed to writing batched functions
   x = jax.nn.relu(concatted @ policy_model_params.wi + policy_model_params.bi)
   # scanf : (carry, input_i) -> (next_carry, output_i)
   scanf = lambda x, hidden_layer : (jax.nn.relu(x @ hidden_layer.weight + hidden_layer.bias), None)
