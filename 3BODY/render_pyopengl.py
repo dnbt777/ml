@@ -5,7 +5,12 @@ import jax
 
 from environment import init_solarsystems, step_simulation, downscaled_simulation_size, get_reward, get_state_summary
 from GRPO import *
-from utils import load_model_params
+from file_utils import load_model_params
+
+render = True
+debug = False
+load_params_from_file = True
+params_filename = "params.pkl"
 
 WIDTH, HEIGHT = 800, 800
 SCALE = downscaled_simulation_size
@@ -21,17 +26,18 @@ MIN_PLANET_RADIUS = 0.02
 SKYBOX = "galaxy2.png"  # This is the relative path to your skybox image
 suns = 3
 planets = 1
-focal_length = 3.0 
-render = True
-simulations = 1 #1_000_000  # Run n simulations simultaneously
+focal_length = 3.0
+simulations = 2 #1_000_000  # Run n simulations simultaneously
 steps_per_simulation = 2_000
 if render:
     steps_per_simulation = 1_000_000
-    simulations = 1
+    simulations = 1 # can be more, for testing, if need be
     TRAIL_LENGTH = 100 
     TRAIL_FADE = 0.01
     lock_mouse = True
-
+if debug:
+    jax.config.update("jax_disable_jit", True)
+    lock_mouse = False
 
 key = jrand.PRNGKey(int(10000 * time.time()))
 solar_system = init_solarsystems(key, simulations, planets, suns)
@@ -39,9 +45,8 @@ hidden_size = 16
 hidden_layers = 10
 input_datapoints = 3*4 + 3*4 + 1*4
 output_actions = 7 # lr/ud/bf/nothing
-load_params_from_file = True
 if load_params_from_file:
-    policy_model_params = load_model_params("params.pkl")
+    policy_model_params = load_model_params(params_filename)
 else:
     policy_model_params = init_policy_model(hidden_layers, hidden_size, input_datapoints, output_actions)
 
@@ -129,7 +134,7 @@ while running:
     key, _ = jrand.split(key, 2)
     solar_system = step_simulation(solar_system, action)
     reward = jax.vmap(get_reward, in_axes=0)(solar_system)
-    debug_data = get_state_summary(solar_system) # todo, was removed
+    debug_data = get_state_summary(solar_system)
 
     if render:
         # ----------------------------------
@@ -183,9 +188,6 @@ while running:
 
         # Smoothly interpolate to the desired position
         camera_position += (desired_camera_position - camera_position) * 0.1  # Adjust smoothing factor as needed
-
-        # yaw, pitch = aim_at_body(camera_position, target_position)
-
 
         # Mouse look
         mouse_dx, mouse_dy = pygame.mouse.get_rel()
@@ -267,6 +269,7 @@ while running:
                 f"Reward: {reward}",
                 f"Steps: {sim_steps}",
                 f"FPS: {int(clock.get_fps())}",
+                f"Action: {action}",
                 f"Debug Data:\n{debug_data}",
             ]
             text_surfaces = [font.render(line, True, text_color) for line in text_lines]

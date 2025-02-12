@@ -6,18 +6,14 @@ import functools
 
 from environment import init_solarsystems, step_simulation, get_reward
 from GRPO import get_decision_probs, init_policy_model
-from utils import load_model_params, save_model_params
+from file_utils import load_model_params, save_model_params
 
 # todo
-  # loop -> scan for:
-    # sim step func
   # jax init everything. make sure its all jitted
     # does moving the funcs outside of get_loss matter?
-    # jit init_solarsystem
-  # change the reward from outcome-supervised to the avg of the states. i.e., advantage_i = reward_i.
 
 @functools.partial(jax.jit, static_argnames=["G", "epsilon", "trajectory_steps", "planets", "suns", "batch_size"])
-def get_loss(new_policy_model_params, old_policy_model_params, key,
+def get_loss_outcome_supervised(new_policy_model_params, old_policy_model_params, key,
              G, epsilon, trajectory_steps,
              planets, suns, batch_size):
   def run_single_trajectory_g(trajectory_key):
@@ -49,7 +45,7 @@ def get_loss(new_policy_model_params, old_policy_model_params, key,
     state, policies = jax.lax.scan(step_scanf, init_state, None, length=trajectory_steps)
     # unpack
     solar_systems, trajectory_key = state
-    old_policy_trajectory_g, new_policy_trajectory_g = policies # may break. [b] is [(old_p_step, new_p_step)] not ([old_p_step], [new_p_step])
+    old_policy_trajectory_g, new_policy_trajectory_g = policies
     # format axes (b, step, logits)
     old_policy_trajectory_g = old_policy_trajectory_g.swapaxes(0, 1) # (step, batch, logits) => (batch, step, logits)
     new_policy_trajectory_g = new_policy_trajectory_g.swapaxes(0, 1) # (step, batch, logits) => (batch, step, logits)
@@ -84,6 +80,48 @@ def get_loss(new_policy_model_params, old_policy_model_params, key,
   return loss
 
 
+@functools.partial(jax.jit, static_argnames=["G", "trajectory_steps", "planets", "suns", "batch_size"])
+def get_episode_rewards(new_policy_model_params, key,
+             G, trajectory_steps,
+             planets, suns, batch_size):
+  def run_single_trajectory_g(trajectory_key):
+    # init new state
+    trajectory_key, _ = jrand.split(trajectory_key, 2) # roll key
+    solar_systems = init_solarsystems(trajectory_key, batch_size, planets, suns)
+
+    # carry, [a] => (carry, [b])
+    # state, None => (state, (old_policy_probs, new_policy_probs))
+    # state: trajectory_key, solar_systems
+    # [a]: None
+    def step_scanf(state, i):
+      solar_systems, scan_key = state
+
+      new_policy_step = get_decision_probs(new_policy_model_params, solar_systems)
+
+      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
+      action = jrand.categorical(scan_key, new_policy_step, axis=-1) # (batch_size,)
+
+      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
+      solar_systems = step_simulation(solar_systems, action)
+      next_step_rewards = jax.vmap(get_reward, in_axes=0)(solar_systems)
+      return (solar_systems, scan_key), (next_step_rewards) # state, b
+
+    ## SCAN OVER SIM STEPS
+    # pack
+    init_state = (solar_systems, trajectory_key)
+    # scan
+    state, intermittent_rewards_g = jax.lax.scan(step_scanf, init_state, None, length=trajectory_steps)
+    solar_systems, trajectory_key = state
+    # format axes (b, step, logits)
+    # end_reward = reward(state)
+    outcome_reward_g = jax.vmap(get_reward, in_axes=0)(solar_systems) # vmap over (batch,)
+    return intermittent_rewards_g, outcome_reward_g
+
+  random_keys = jrand.split(key, G).reshape((G, 2)) # batching happens INSIDE run_single_trajectory_g
+  intermittent_rewards, outcome_rewards = jax.vmap(run_single_trajectory_g)(random_keys)
+  return intermittent_rewards, outcome_rewards
+
+
 # policy = init policy (model)
 hidden_size = 16
 hidden_layers = 10
@@ -99,69 +137,65 @@ new_policy_model_params = policy_model_params
 # policy: the actual probs of the actions
 
 
-# GRPO https://arxiv.org/pdf/2402.03300
-update_old_policy = 50 # update every 10 iters
+# sim stuff
 planets = 1
 suns = 3
+trajectory_horizon = 200 # run simulation for n steps
 
-G = 512 # paper: 64 outputs
-batch_size = 16 # paper uses 1024
-trajectory_steps = 50 # run simulation for n steps
+# GRPO https://arxiv.org/pdf/2402.03300
+G = 64 # 512 # paper: 64 outputs
+batch_size = 128 # 16 # paper uses 1024
+update_old_policy = 10 # update every 10 iters
 
-epsilon = 1e-3 # for clipping
-train_iters = 20000 # arbitrary. how long we want to train for
-dkl_beta = 0.04 # from paper
+epsilon = 0.1 # for clipping - https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
+train_iters = 4000 # arbitrary. how long we want to train for
+dkl_beta = 0.0001 # https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
 key = jrand.PRNGKey(0) # init rolling key
 
 # train
 debug = False
 if debug:
-    jax.config.update("jax_disable_jit", True)
-    
-jax.config.update("jax_debug_infs", True)
-jax.config.update("jax_debug_nans", True)
+  jax.config.update("jax_disable_jit", True)
+  jax.config.update("jax_debug_infs", False)
+  jax.config.update("jax_debug_nans", True)
+else:
+  import warnings
+  warnings.filterwarnings("ignore")
 
-learning_rate = 0.1
-learning_rate_decay = 0.1
+
+learning_rate = 3e-2
+learning_rate_decay = 0.001
 
 import time
 start = time.time()
 print("training")
 for train_iter in range(train_iters):
-  
   key, _ = jrand.split(key, 2) # roll key
-  #try:
-  #  loss = get_loss(new_policy_model_params, old_policy_model_params, key,
-  #                  G=G, epsilon=epsilon, trajectory_steps=trajectory_steps,
-  #                  planets=planets, suns=suns, batch_size=batch_size)
-  #except:
-  #   jax.config.update("jax_disable_jit", True)
-  #   loss = get_loss(new_policy_model_params, old_policy_model_params, key,
-  #                  G=G, epsilon=epsilon, trajectory_steps=trajectory_steps,
-  #                  planets=planets, suns=suns, batch_size=batch_size)
-  try:
-    loss, grads = jax.value_and_grad(get_loss)(new_policy_model_params, old_policy_model_params, key,
-                                              G=G, epsilon=epsilon, trajectory_steps=trajectory_steps,
-                                              planets=planets, suns=suns, batch_size=batch_size)
-  except:
-    jax.config.update("jax_disable_jit", True)
-    loss = get_loss(new_policy_model_params, old_policy_model_params, key,
-                  G=G, epsilon=epsilon, trajectory_steps=trajectory_steps,
-                  planets=planets, suns=suns, batch_size=batch_size)
+  loss, grads = jax.value_and_grad(get_loss_outcome_supervised)(new_policy_model_params, old_policy_model_params, key,
+                                            G=G, epsilon=epsilon, trajectory_steps=trajectory_horizon,
+                                            planets=planets, suns=suns, batch_size=batch_size)
+  step_rewards, outcome_rewards = get_episode_rewards(new_policy_model_params, key,
+                                                          G, trajectory_horizon,
+                                                          planets, suns, batch_size)
   if train_iter == 0:
       jit_end = time.time()
       print((jit_end - start)/60)
   elif train_iter % update_old_policy == 0:
       old_policy_model_params = new_policy_model_params # update old policy model
       learning_rate = learning_rate * (1 - learning_rate_decay)
+      step_rewards, outcome_rewards = get_episode_rewards(new_policy_model_params, key,
+                                                          G, trajectory_horizon,
+                                                          planets, suns, batch_size)
+      #print(f"{train_iter} Mean outcome reward: {jnp.mean(outcome_rewards)}")
+      #print(f"{train_iter} Mean episode return: {jnp.mean(step_rewards)}")
   grads = jax.tree_util.tree_map(lambda g: g*learning_rate, grads)
-  new_policy_model_params = jax.tree_util.tree_map(lambda g, p: p - g, grads, new_policy_model_params)
-  print(train_iter, loss, learning_rate)
+  new_policy_model_params = jax.tree_util.tree_map(lambda g, p: p + g, grads, new_policy_model_params) # maximize objective (its different in RL)
+  print(train_iter, loss, learning_rate, jnp.mean(step_rewards), jnp.mean(outcome_rewards))
 end = time.time()
-print((end - start)/60)
+#print((end - start)/60)
 
-print(end - jit_end)
-print(f"steps/sec:{train_iters*trajectory_steps*G*batch_size / (end - jit_end)}")
+#print(end - jit_end)
+print(f"steps/sec: {train_iters*trajectory_horizon*G*batch_size / (end - jit_end):,.0f}")
 save_model_params(new_policy_model_params)
 
 
