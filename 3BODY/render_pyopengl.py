@@ -135,6 +135,7 @@ while running:
     solar_system = step_simulation(solar_system, action)
     reward = jax.vmap(get_reward, in_axes=0)(solar_system)
     debug_data = get_state_summary(solar_system)
+    model_vision = safe_concat_current_state(solar_system) # see what the model sees
 
     if render:
         # ----------------------------------
@@ -263,14 +264,26 @@ while running:
         draw_cube_edges(GRID_COLOR, SCALE)
 
         # Create the text surface
+        body_count = planets + suns
         if show_debug_menu:
+            jnp.set_printoptions(precision=3)
             text_lines = [
                 "",
                 f"Reward: {reward}",
                 f"Steps: {sim_steps}",
                 f"FPS: {int(clock.get_fps())}",
                 f"Action: {action}",
-                f"Debug Data:\n{debug_data}",
+                f"Debug Data:{debug_data}",
+                f"Model vision:",
+                f"Planet:",
+                f"Pos : {model_vision[0:3]}",
+                f"Vel : {model_vision[3*body_count:3*body_count + 3]}",
+                f"Mass: {model_vision[6*body_count:6*body_count + 1]}"
+                f"",
+                f"Suns:",
+                f"Pos : {model_vision[3:3*body_count]}",
+                f"Vel : {model_vision[3*body_count + 3:6*body_count]}",
+                f"Mass: {model_vision[6*body_count + 1:]}"
             ]
             text_surfaces = [font.render(line, True, text_color) for line in text_lines]
 

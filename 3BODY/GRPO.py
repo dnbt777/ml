@@ -79,7 +79,7 @@ def safe_concat_current_state(solar_system_batch):
   # should be false velocity? divide by sim size maybe? hmm...
 
   mass = jnp.ravel(solar_system_batch.bodies.mass)
-  safe_mass = jnp.log(mass / jnp.max(jnp.abs(mass), axis=-1, keepdims=True))
+  safe_mass = mass / jnp.max(jnp.abs(mass), axis=-1, keepdims=True)
   #norm_mass = (mass - jnp.mean(mass, axis=-1, keepdims=True)) / jnp.std(mass, axis=-1, keepdims=True) # constant transform, does not need to be recalculated
   #log_mass = jnp.log(mass)
 
@@ -104,11 +104,11 @@ def get_decision_logits(policy_model_params : PMParams, current_state):
   # ignore radius stuff
   # total = 12 + 12 + 4 = (batchsize, 28)
   concatted = jax.vmap(safe_concat_current_state, in_axes=0)(current_state) # vmap across batch axis - this is the way to go, as opposed to writing batched functions
-  x = jax.nn.relu(concatted @ policy_model_params.wi + policy_model_params.bi)
+  x = jax.nn.tanh(concatted @ policy_model_params.wi + policy_model_params.bi)
   # scanf : (carry, input_i) -> (next_carry, output_i)
-  scanf = lambda x, hidden_layer : (jax.nn.relu(x @ hidden_layer.weight + hidden_layer.bias), None)
+  scanf = lambda x, hidden_layer : (jax.nn.tanh(x @ hidden_layer.weight + hidden_layer.bias), None)
   x = jax.lax.scan(scanf, x, (policy_model_params.hidden_layers))[0] # scan => (x, None)
-  x = jax.nn.relu(x @ policy_model_params.wo + policy_model_params.bo)
+  x = jax.nn.tanh(x @ policy_model_params.wo + policy_model_params.bo)
   return x
 
 

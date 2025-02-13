@@ -42,7 +42,10 @@ conversion_to_downscaled_distance = downscaled_simulation_size / true_simulation
 conversion_to_true_distance = true_simulation_size / downscaled_simulation_size
 
 default_body_velocity = 29*1000 # m/s, earth orbit speed
-downscaled_default_body_velocity = 29*1000 * conversion_to_downscaled_distance # m/s, earth orbit speed
+downscaled_default_body_velocity = default_body_velocity * conversion_to_downscaled_distance # m/s, earth orbit speed
+
+agent_body_velocity = 1000 # calculate to make realistic. google mass/energy efficiency
+downscaled_agent_body_velocity = agent_body_velocity * conversion_to_downscaled_distance
 
 
 
@@ -124,99 +127,6 @@ def get_velocity_unit_vector_from_action(action):
     ], dtype=jnp.float32)[action]
 
 
-
-@jax.jit
-def step_simulation_old(solar_system : SolarSystem, action) -> SolarSystem:
-    # calculate momentum updates for each
-    # f = ma = mv / dt
-    # mv = f * dt
-        # calculate force on each object
-        # f = m1 * m2 * G / r^2
-        # for each object_i:
-        #   for each other object_j:
-        #       object_i.velocity += dt * (object_i.mass * object_j.mass * G / dist(object_i, object_j)^2) / object_i.mass (object_i cancels)
-    
-    # for loop -> vmap across indexes
-    #def velocity_updates(body1_idx, body2_idx):
-    n = solar_system.bodies.position.shape[1]
-    # meshgrid-like, but add ones-triu to create set of all combinations without body1
-    #body1_idxs = jnp.tile(jnp.arange(n, dtype=jnp.uint8).reshape(1, n), n-1).reshape(n-1, n).transpose() # probably a simpler way to do this lol
-    body1_idxs = jnp.arange(n, dtype=jnp.uint8)
-    body2_idxs = jnp.tile(jnp.arange(n-1, dtype=jnp.uint8), n).reshape(n, n-1) + jnp.triu(jnp.ones((n, n-1), dtype=jnp.uint8))
-
-    #body1_idxs = jnp.ravel(body1_idxs)
-    #body2_idxs = jnp.ravel(body2_idxs)
-
-    # honestly.. the indexes are small enough (0-3) that I should just jit with static args here
-    # does not scale as planets scale (massive compile times). but we arent scaling planets.
-    @functools.partial(jax.jit, static_argnames=["body1_idx", "body2_idx"])
-    def get_change_in_velocity(solar_system, body1_idx, body2_idx):
-        # get direction
-        difference_vector = solar_system.bodies.position[body2_idx] - solar_system.bodies.position[body1_idx]
-        #pos2 = jax.lax.dynamic_index_in_dim(solar_system.bodies.position, body2_idx, axis=1)
-        #pos1 = jax.lax.dynamic_index_in_dim(solar_system.bodies.position, body1_idx, axis=1)
-        #difference_vector = pos2 - pos1
-        downscaled_distance = jnp.sqrt(jnp.sum(difference_vector*difference_vector, axis=-1))
-        unit_direction_vector = difference_vector / jnp.expand_dims(downscaled_distance, -1)
-        # get acceleration
-        ab = solar_system.bodies.mass[body2_idx] * G
-        radius_squared = (downscaled_distance * conversion_to_true_distance)**2 # potential source of nans/infs
-        epsilon = solar_system.bodies.radius[body1_idx] + solar_system.bodies.radius[body2_idx] # prevents infs in divide
-        acceleration_from_gravity = ab / (radius_squared + epsilon)
-        downscaled_acceleration_from_gravity = conversion_to_downscaled_distance * acceleration_from_gravity
-        # get velocity
-        downscaled_velocity_change = dt * unit_direction_vector * jnp.expand_dims(downscaled_acceleration_from_gravity, -1)
-        return downscaled_velocity_change
-    
-    fmap_over_body2 = jax.vmap(get_change_in_velocity, in_axes=(None, None, 0))
-    fmap_over_body1 = jax.vmap(fmap_over_body2, in_axes=(None, 0, 0))
-    fmap_over_solar_system_batches = jax.vmap(fmap_over_body1, in_axes=(0, None, None))
-
-    downscaled_total_velocity_change = jnp.sum(fmap_over_solar_system_batches(solar_system, body1_idxs, body2_idxs), axis=-1)
-
-    new_downscaled_velocity = solar_system.bodies.velocity + downscaled_total_velocity_change
-    solar_system = SolarSystem(
-        bodies = SolarBody(
-            velocity = new_downscaled_velocity, # downscaled
-            position = solar_system.bodies.position, # downscaled
-            mass = solar_system.bodies.mass, # true
-            radius = solar_system.bodies.radius # downscaled
-        )
-    )
-    
-    # get host planet's momentum update from the agent's response to the solar system
-    downscaled_velocity_shift = get_velocity_unit_vector_from_action(action) * downscaled_default_body_velocity
-    agent_velocity_shift = downscaled_velocity_shift
-    # updates the solar system with a shift in the momentum of the agent planet
-
-    # get position based off of momentum
-    # for each object:
-        # object.position += dt * object.velocity
-    for body_idx in range(solar_system.bodies.velocity.shape[1]):
-        if body_idx == 0:
-            downscaled_velocity = (agent_velocity_shift + solar_system.bodies.velocity[:, 0])
-        else:
-            downscaled_velocity = solar_system.bodies.velocity[:, body_idx]
-        downscaled_position_change = dt * downscaled_velocity
-        new_position = solar_system.bodies.position.at[:, body_idx].set(
-            solar_system.bodies.position[:, body_idx] +
-            downscaled_position_change
-        )
-        #new_position = solar_system.bodies.position.at[:, body_idx].set(
-        #    solar_syst    # solar_system -> index -> [index] -> [velocity_change]em.bodies.position[:, body_idx] +
-        #    dt * solar_system.bodies.velocity[:, body_idx]
-        #)
-        solar_system = SolarSystem(
-            bodies = SolarBody(
-                velocity = solar_system.bodies.velocity,
-                position=new_position,
-                mass=solar_system.bodies.mass,
-                radius=solar_system.bodies.radius
-            )
-        )
-    return solar_system
-
-
 @jax.jit
 def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
     # calculate momentum updates for each
@@ -278,7 +188,7 @@ def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
     )
     
     # get host planet's momentum update from the agent's response to the solar system
-    downscaled_agent_velocity_shift = get_velocity_unit_vector_from_action(action) * downscaled_default_body_velocity
+    downscaled_agent_velocity_shift = get_velocity_unit_vector_from_action(action) * downscaled_agent_body_velocity
     solar_system = SolarSystem(
             bodies = SolarBody(
                 velocity = solar_system.bodies.velocity.at[:, 0].set(solar_system.bodies.velocity[:, 0] + downscaled_agent_velocity_shift),

@@ -12,10 +12,10 @@ from file_utils import load_model_params, save_model_params
   # jax init everything. make sure its all jitted
     # does moving the funcs outside of get_loss matter?
 
-@functools.partial(jax.jit, static_argnames=["G", "epsilon", "trajectory_steps", "planets", "suns", "batch_size"])
+@functools.partial(jax.jit, static_argnames=["G", "epsilon", "trajectory_steps", "planets", "suns", "batch_size", "dkl_beta"])
 def get_loss_outcome_supervised(new_policy_model_params, old_policy_model_params, key,
              G, epsilon, trajectory_steps,
-             planets, suns, batch_size):
+             planets, suns, batch_size, dkl_beta):
   def run_single_trajectory_g(trajectory_key):
     # init new state
     trajectory_key, _ = jrand.split(trajectory_key, 2) # roll key
@@ -63,18 +63,18 @@ def get_loss_outcome_supervised(new_policy_model_params, old_policy_model_params
   # advantages = (end_rewards - avg(end_rewards)) / standard_deviation(end_rewards)
   advantages = (outcome_rewards - jnp.mean(outcome_rewards, axis=-1, keepdims=True)) / (jnp.std(outcome_rewards, axis=-1, keepdims=True) + 1e-7) # (batch, g)
   # loss = - (1/G) * (1/2000) * sum_across_G(sum_across_steps((min(prob_ratios * advantages.extend(), min(prob_ratios, 1 + epsilon, 1 - epsilon)) - kl_divergence)))
-  advantages = advantages[:, :, None, None] # (batch, g, trajectory_steps, probs) => (batch, g, trajectory_steps, probs)
+  advantages = advantages[:, :, jnp.newaxis, jnp.newaxis] # (batch, g, trajectory_steps, probs) => (batch, g, trajectory_steps, probs)
   prob_ratios = new_policy / (old_policy + 1e-7)
-  kl_divergence = old_policy / (new_policy + 1e-7) - jnp.log(old_policy + 1e-7) - jnp.log(new_policy + 1e-7) - 1
+  kl_divergence = old_policy / (new_policy + 1e-7) - (jnp.log(old_policy + 1e-7) - jnp.log(new_policy + 1e-7)) - 1
 
   # get loss for each g
   xa = prob_ratios * advantages
   xb = jnp.clip(prob_ratios, 1 + epsilon, 1 - epsilon) * advantages
   xc = jnp.minimum(xa,xb)
-  xd = xc - kl_divergence
-  xe = jnp.sum(xd, axis=-1) * (1/7) # across logit axis (batch, g, step, logit) => (batch, g, step) 
+  xd = xc - (dkl_beta * kl_divergence)
+  xe = jnp.sum(xd, axis=-1) #* (1/7) # across logit axis (batch, g, step, logit) => (batch, g, step) 
   xf = jnp.sum(xe, axis=-1) * (1/trajectory_steps) # across step axis (batch, g, step) => (batch, g) -- get loss for each g
-  xg = jnp.sum(xf, axis=-1) * (1/batch_size) # combine all batch losses.
+  xg = jnp.sum(xf, axis=-1) #* (1/batch_size) # combine all batch losses.
   xh = jnp.sum(xg, axis=-1) * (1/G) # across g axis (batch, g) => batch. get loss for each batch.
   loss = -xh
   return loss
@@ -123,8 +123,8 @@ def get_episode_rewards(new_policy_model_params, key,
 
 
 # policy = init policy (model)
-hidden_size = 16
-hidden_layers = 10
+hidden_size = 64
+hidden_layers = 16
 input_datapoints = 3*4 + 3*4 + 1*4
 output_actions = 7 # lr/ud/bf/nothing
 policy_model_params = init_policy_model(hidden_layers, hidden_size, input_datapoints, output_actions)
@@ -140,12 +140,12 @@ new_policy_model_params = policy_model_params
 # sim stuff
 planets = 1
 suns = 3
-trajectory_horizon = 200 # run simulation for n steps
+trajectory_horizon = 20 # run simulation for n steps
 
 # GRPO https://arxiv.org/pdf/2402.03300
 G = 64 # 512 # paper: 64 outputs
 batch_size = 128 # 16 # paper uses 1024
-update_old_policy = 10 # update every 10 iters
+update_old_policy = 20 # update every 10 iters
 
 epsilon = 0.1 # for clipping - https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
 train_iters = 4000 # arbitrary. how long we want to train for
@@ -163,17 +163,22 @@ else:
   warnings.filterwarnings("ignore")
 
 
-learning_rate = 3e-2
+learning_rate = 3e-3
 learning_rate_decay = 0.001
 
 import time
 start = time.time()
 print("training")
+step_rewards, outcome_rewards = get_episode_rewards(new_policy_model_params, key,
+                                                        G, trajectory_horizon,
+                                                        planets, suns, batch_size)
+print(f"{-1} Mean outcome reward: {jnp.mean(outcome_rewards)}")
+print(f"{-1} Mean episode return: {jnp.mean(step_rewards)}")
 for train_iter in range(train_iters):
   key, _ = jrand.split(key, 2) # roll key
   loss, grads = jax.value_and_grad(get_loss_outcome_supervised)(new_policy_model_params, old_policy_model_params, key,
                                             G=G, epsilon=epsilon, trajectory_steps=trajectory_horizon,
-                                            planets=planets, suns=suns, batch_size=batch_size)
+                                            planets=planets, suns=suns, batch_size=batch_size, dkl_beta=dkl_beta)
   step_rewards, outcome_rewards = get_episode_rewards(new_policy_model_params, key,
                                                           G, trajectory_horizon,
                                                           planets, suns, batch_size)
