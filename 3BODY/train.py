@@ -87,7 +87,7 @@ def old_get_loss_outcome_supervised(new_policy_model_params, old_policy_model_pa
   return loss
 
 
-# new code
+# new code (pg 14 https://arxiv.org/pdf/2402.03300)
 # policy = init policy
 # for l in lmao:
   # ref policy = policy
