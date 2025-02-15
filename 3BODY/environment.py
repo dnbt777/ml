@@ -49,7 +49,6 @@ downscaled_agent_body_velocity = agent_body_velocity * conversion_to_downscaled_
 
 
 
-
 # jit because it gets reused to reinit the environment a lot
 @functools.partial(jax.jit, static_argnames=["batches", "planets", "suns"])
 def init_solarsystems(key, batches, planets, suns):
