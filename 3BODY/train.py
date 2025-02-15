@@ -97,7 +97,7 @@ def old_get_loss_outcome_supervised(new_policy_model_params, old_policy_model_pa
     # get the rewards and advantages for each
     # new_policy = policy
     # for j in jjjjjjjj:
-      # loss= 
+      # get_loss_outcome_supervised= 
         # do GRPO equation on the batches, trajectories, and old policy from the previous lines of code
       # grads <- loss
       # new_policy = update(new_policy, grads)
