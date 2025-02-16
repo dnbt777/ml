@@ -27,7 +27,7 @@ def get_objective_outcome_supervised(new_policy_model_params,
   # outcome supervision GRPO equation
   # loss = - (1/G) * (1/2000) * sum_across_G(sum_across_steps((min(prob_ratios * advantages.extend(), min(prob_ratios, 1 + epsilon, 1 - epsilon)) - kl_divergence)))
   prob_ratios = new_policy_outputs / (old_policy_outputs + 1e-7)
-  kl_divergence = old_policy_outputs / (new_policy_outputs + 1e-7) - (jnp.log(old_policy_outputs + 1e-7) - jnp.log(new_policy_outputs + 1e-7)) - 1
+  kl_divergence = old_policy_outputs / (new_policy_outputs + 1e-7) - jnp.log(old_policy_outputs/(new_policy_outputs + 1e-7)) - 1
   # calculate the equations in parts for debugging
   # this gets compiled anyways, so its likely not memory inefficient
   xa = prob_ratios * A
@@ -89,28 +89,24 @@ def replay_batch_trajectories(policy_model_params, trajectory_states, trajectory
 ## --------------- ######
 
 # model hyperparams
-hidden_size = 8
-hidden_layers = 5
+hidden_size = 16
+hidden_layers = 10
 input_datapoints = 3*4 + 3*4 + 1*4
 output_actions = 7 # lr/ud/bf/nothing
 
 # sim hyperparams
 planets = 1
 suns = 3
-trajectory_horizon = 50 # run simulation for n steps
+trajectory_horizon = 20 # run simulation for n steps
 
 # GRPO hyperparams https://arxiv.org/pdf/2402.03300
 G = 64 # 512 # paper: 64 outputs
-batch_size = 512 # 16 # paper uses 1024
-update_old_policy = 20 # update every 10 iters
+batch_size = 1024 # 16 # paper uses 1024
 
 epsilon = 0.1 # for clipping - https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
-train_iters = 4000 # arbitrary. how long we want to train for
-dkl_beta = 0.04 # https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
-rolling_key = jrand.PRNGKey(0) # init rolling key
+dkl_beta = 0.01 # https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
 
-learning_rate = 3e-4
-learning_rate_decay = 0.001
+learning_rate = 3e-3
 
 debug = False
 if debug:
@@ -121,6 +117,11 @@ else:
   import warnings
   warnings.filterwarnings("ignore")
 
+# TODO
+# implement dkl correctly, with reference instead of old
+# optimize so I can run larger or faster experiments
+# hyperparameter optimization?
+
 
 
 ###### --------- ######
@@ -129,21 +130,22 @@ else:
 
 start = time.time()
 ###################
-data = []
+
 
 #> page 14 - https://arxiv.org/pdf/2402.03300 <#
-initial_policy_model_params = init_policy_model(hidden_layers, hidden_size, input_datapoints, output_actions)
-policy_model_params = initial_policy_model_params
-I = 1
+new_policy_model_params = init_policy_model(hidden_layers, hidden_size, input_datapoints, output_actions)
+rolling_key = jrand.PRNGKey(0) # init rolling key
+data = [] # graphing progress
+I = 5
 for iteration in range(I):
-  reference_policy_model_params = policy_model_params
-  M = 1
+  #reference_policy_model_params = new_policy_model_params
+  M = 10
   for step in range(M):
     # sample a batch Db
     rolling_key, _ = jrand.split(rolling_key, 2) # reroll key before every use
     solar_system_batch = init_solarsystems(rolling_key, batch_size, planets, suns) # (batch_size, solar_system)
     # old_policy <- policy
-    old_policy_model_params = policy_model_params
+    # old_policy_model_params = new_policy_model_params
     # generate G outputs for each q in Db
     # convert (batch_size, *) arrays in SoA to (G, batch_size, *) arrays
     duplicate_batch_G_times = lambda batch: jnp.repeat(jnp.expand_dims(batch, 0), G, axis=0)
@@ -155,14 +157,13 @@ for iteration in range(I):
     #run_batch_trajectory = jax.vmap(run_single_trajectory, in_axes=(None, 0, None, 0))
     run_group_trajectory = jax.vmap(run_batch_trajectories, in_axes=(None, 0, None, 0))
     old_policy_outputs, trajectory_states, outcome_rewards = run_group_trajectory(
-      old_policy_model_params, solar_system_G, trajectory_horizon, trajectory_keys
+      new_policy_model_params, solar_system_G, trajectory_horizon, trajectory_keys
       )  # (G, batch_size, trajectory_horizon, logits) (G, batch_size, trajectory_horizon, solar_system) (G, batch_size)
     # get the advantage across the G dim (first axis)
     A = (outcome_rewards - jnp.mean(outcome_rewards, axis=0, keepdims=True)) / (1e-7 + jnp.std(outcome_rewards, axis=0, keepdims=True)) # (G, batch_size)
     A = A[:, :, jnp.newaxis, jnp.newaxis] # (G, batch_size) => (G, batch_size, step_o, logprobs) ## this lets us do (A * old_policy / new_policy) later
-    # new_policy <- policy
-    new_policy_model_params = policy_model_params
-    mu = 20
+    print(f"{iteration}, {step}, {jnp.mean(outcome_rewards):.4f}")
+    mu = 100
     for GRPO_iteration in range(mu):
       # GRPO objective function and grads
       rolling_key, _ = jrand.split(rolling_key, 2)
@@ -173,16 +174,21 @@ for iteration in range(I):
       )
       # maximize objective function
       new_policy_model_params = jax.tree_util.tree_map(lambda p, g: p + g * learning_rate, new_policy_model_params, grads) # element-wise sum of two structures
-      print(f"{iteration}, {step}, {GRPO_iteration}, {objective:.4f}, {jnp.mean(outcome_rewards):.4f}")
+      #print(f"{iteration}, {step}, {GRPO_iteration}, {objective:.4f}, {jnp.mean(outcome_rewards):.4f}")
       data.append((iteration, step, GRPO_iteration, objective, jnp.mean(outcome_rewards)))
     # update policy
     # the 4th policy model var 'policy_model_params' is not needed
-    policy_model_params = new_policy_model_params
+    # policy_model_params = new_policy_model_params
 
 
 #################
 end = time.time()
 
+
+
+##                ###
+##  -  logging  -  ##
+###                ##
 
 import os
 import pandas as pd
@@ -198,7 +204,7 @@ col_names = ["iteration", "step", "GRPO_iteration", "objective", "outcome_reward
 df = pd.DataFrame(data, columns=col_names)
 df.to_csv(f"{current_run_folder}/data.csv")
 # output plots
-xstep, objectives, avg_reward = zip(*[(M*iteration + mu*step + GRPO_iteration, objective, avg_reward) for iteration, step, GRPO_iteration, objective, avg_reward in data])
+xstep, objectives, avg_reward = zip(*[(I*iteration + mu*step + GRPO_iteration, objective, avg_reward) for iteration, step, GRPO_iteration, objective, avg_reward in data])
 plt.figure(0)
 plt.plot(xstep, objectives)
 plt.title('step vs objective value')

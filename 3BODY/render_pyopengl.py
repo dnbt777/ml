@@ -2,16 +2,19 @@ import numpy as np
 import time
 import jax.random as jrand
 import jax
+import os
 
 from environment import init_solarsystems, step_simulation, downscaled_simulation_size, get_reward, get_state_summary
 from GRPO import *
 from file_utils import load_model_params
 
+# most important params
 render = True
 debug = False
-load_params_from_file = True
-params_filename = "params.pkl"
+load_params_from_file = True # else, generate a random model. useful for seeing growth
+train_run = -1
 
+# other
 WIDTH, HEIGHT = 800, 800
 SCALE = downscaled_simulation_size
 PLANET_COLOR = (200, 150, 0)
@@ -29,6 +32,13 @@ planets = 1
 focal_length = 3.0
 simulations = 2 #1_000_000  # Run n simulations simultaneously
 steps_per_simulation = 2_000
+#model
+hidden_size = 16
+hidden_layers = 10
+input_datapoints = 3*4 + 3*4 + 1*4
+output_actions = 7 # lr/ud/bf/nothing
+
+# setup params that require conditional logic
 if render:
     steps_per_simulation = 1_000_000
     simulations = 1 # can be more, for testing, if need be
@@ -38,17 +48,21 @@ if render:
 if debug:
     jax.config.update("jax_disable_jit", True)
     lock_mouse = False
-
-key = jrand.PRNGKey(int(10000 * time.time()))
-solar_system = init_solarsystems(key, simulations, planets, suns)
-hidden_size = 16
-hidden_layers = 10
-input_datapoints = 3*4 + 3*4 + 1*4
-output_actions = 7 # lr/ud/bf/nothing
+if train_run == -1:
+    # load the last train run
+    train_run = len(os.listdir('./3BODY/train_runs/'))
+    params_filename = f"./3BODY/train_runs/{train_run}/params.pkl"
+else:
+    # else, load the specific train run
+    params_filename = f"./3BODY/train_runs/{train_run}/params.pkl"
 if load_params_from_file:
     policy_model_params = load_model_params(params_filename)
 else:
     policy_model_params = init_policy_model(hidden_layers, hidden_size, input_datapoints, output_actions)
+
+key = jrand.PRNGKey(int(10000 * time.time()))
+solar_system = init_solarsystems(key, simulations, planets, suns)
+
 
 # ---------------------------------------------------------------------
 # Initialize Pygame Display with an OpenGL context
