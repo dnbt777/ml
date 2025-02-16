@@ -8,227 +8,99 @@ from environment import init_solarsystems, step_simulation, get_reward
 from GRPO import get_decision_probs, init_policy_model
 from file_utils import load_model_params, save_model_params
 
-## current state:
-  # the old model completes a batch of trajectories
-  # the new model completes the same batch
-  # repeat G times 
-  # (2 * batch * G) trajectories total
-## correction
-  # have one batch of trajectories from the old model
-  # have G new models 'complete' that one, single, same batch of trajectories
-  # each g completes the same batch
-  # (batch + batch * G) trajectories total
 
-@functools.partial(jax.jit, static_argnames=["G", "epsilon", "trajectory_steps", "planets", "suns", "batch_size", "dkl_beta"])
-def old_get_loss_outcome_supervised(new_policy_model_params, old_policy_model_params, key,
-             G, epsilon, trajectory_steps,
-             planets, suns, batch_size, dkl_beta):
-  def run_single_trajectory_g(trajectory_key):
-    # init new state
-    trajectory_key, _ = jrand.split(trajectory_key, 2) # roll key
-    solar_systems = init_solarsystems(trajectory_key, batch_size, planets, suns)
+@functools.partial(jax.jit, static_argnames=["epsilon", "dkl_beta"])
+def get_loss_outcome_supervised(new_policy_model_params,
+                                old_policy_outputs, trajectory_states,
+                                epsilon, dkl_beta):
+  G, batch_size, trajectory_horizon, _ = old_policy_outputs.shape # (G, batch_size, trajectory_horizon, logits)
+  random_keys = jrand.split(key, G*batch_size).reshape((G, batch_size, 2))
 
-    # carry, [a] => (carry, [b])
-    # state, None => (state, (old_policy_probs, new_policy_probs))
-    # state: trajectory_key, solar_systems
-    # [a]: None
-    def step_scanf(state, i):
-      solar_systems, scan_key = state
+  # replay all trajectories
+  replay_batch_trajectories = jax.vmap(replay_single_trajectory, in_axes=(None, 0, 0))
+  replay_group_trajectories = jax.vmap(replay_batch_trajectories, in_axes=(None, 0, 0))                           
+  new_policy_outputs = replay_group_trajectories(new_policy_model_params, trajectory_states, random_keys) # (G, batch_size, trajectory_horizon, logits)
 
-      old_policy_step = get_decision_probs(old_policy_model_params, solar_systems) # (batch_size, actions)
-      new_policy_step = get_decision_probs(new_policy_model_params, solar_systems)
-
-      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
-      action = jrand.categorical(scan_key, old_policy_step, axis=-1) # (batch_size,)
-
-      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
-      solar_systems = step_simulation(solar_systems, action)
-      return (solar_systems, scan_key), (old_policy_step, new_policy_step) # state, b
-
-    ## SCAN OVER SIM STEPS
-    # pack
-    init_state = (solar_systems, trajectory_key)
-    # scan
-    state, policies = jax.lax.scan(step_scanf, init_state, None, length=trajectory_steps)
-    # unpack
-    solar_systems, trajectory_key = state
-    old_policy_trajectory_g, new_policy_trajectory_g = policies
-    # format axes (b, step, logits)
-    old_policy_trajectory_g = old_policy_trajectory_g.swapaxes(0, 1) # (step, batch, logits) => (batch, step, logits)
-    new_policy_trajectory_g = new_policy_trajectory_g.swapaxes(0, 1) # (step, batch, logits) => (batch, step, logits)
-
-    # end_reward = reward(state)
-    outcome_reward_g = jax.vmap(get_reward, in_axes=0)(solar_systems) # vmap over (batch,)
-    return old_policy_trajectory_g, new_policy_trajectory_g, outcome_reward_g
-
-  random_keys = jrand.split(key, G).reshape((G, 2)) # batching happens INSIDE run_single_trajectory_g
-  #key_func = functools.partial(run_single_trajectory_g, new_policy_model_params)
-  #vmap_func = jax.vmap(jax.vmap(run_single_trajectory_g))
-  old_policy, new_policy, outcome_rewards = jax.vmap(run_single_trajectory_g)(random_keys)
-  # in_axes=-1 because each key is a 1D array of two values. (batch, g, key_data) where key_data is always of size 2.
-
-  # advantages = (end_rewards - avg(end_rewards)) / standard_deviation(end_rewards)
-  advantages = (outcome_rewards - jnp.mean(outcome_rewards, axis=-1, keepdims=True)) / (jnp.std(outcome_rewards, axis=-1, keepdims=True) + 1e-7) # (batch, g)
+  # outcome supervision GRPO equation
   # loss = - (1/G) * (1/2000) * sum_across_G(sum_across_steps((min(prob_ratios * advantages.extend(), min(prob_ratios, 1 + epsilon, 1 - epsilon)) - kl_divergence)))
-  advantages = advantages[:, :, jnp.newaxis, jnp.newaxis] # (batch, g, trajectory_steps, probs) => (batch, g, trajectory_steps, probs)
-  prob_ratios = new_policy / (old_policy + 1e-7)
-  kl_divergence = old_policy / (new_policy + 1e-7) - (jnp.log(old_policy + 1e-7) - jnp.log(new_policy + 1e-7)) - 1
+  prob_ratios = new_policy_outputs / (old_policy_outputs + 1e-7)
+  kl_divergence = old_policy_outputs / (new_policy_outputs + 1e-7) - (jnp.log(old_policy_outputs + 1e-7) - jnp.log(new_policy_outputs + 1e-7)) - 1
 
   # get loss for each g
-  xa = prob_ratios * advantages
-  xb = jnp.clip(prob_ratios, 1 + epsilon, 1 - epsilon) * advantages
+  xa = prob_ratios * A
+  xb = jnp.clip(prob_ratios, 1 + epsilon, 1 - epsilon) * A
   xc = jnp.minimum(xa,xb)
   xd = xc - (dkl_beta * kl_divergence)
   xe = jnp.sum(xd, axis=-1) #* (1/7) # across logit axis (batch, g, step, logit) => (batch, g, step) 
-  xf = jnp.sum(xe, axis=-1) * (1/trajectory_steps) # across step axis (batch, g, step) => (batch, g) -- get loss for each g
+  xf = jnp.sum(xe, axis=-1) * (1/trajectory_horizon) # across step axis (batch, g, step) => (batch, g) -- get loss for each g
   xg = jnp.sum(xf, axis=-1) #* (1/batch_size) # combine all batch losses.
   xh = jnp.sum(xg, axis=-1) * (1/G) # across g axis (batch, g) => batch. get loss for each batch.
   loss = -xh
   return loss
 
 
-@functools.partial(jax.jit, static_argnames=["G", "epsilon", "trajectory_steps", "planets", "suns", "batch_size", "dkl_beta"])
-def get_loss_outcome_supervised(new_policy_model_params, old_policy_model_params, key,
-             G, epsilon, trajectory_steps,
-             planets, suns, batch_size, dkl_beta):
-  
-  # generate trajetory O using old_policy
-  
-
-  # have G new_policy models run through O
-
-
-
-
-
-  def generate_trajectory(trajectory_key):
-    pass
-
-  def run_single_trajectory_g(trajectory_key):
-    # init new state
-    trajectory_key, _ = jrand.split(trajectory_key, 2) # roll key
-    solar_systems = init_solarsystems(trajectory_key, batch_size, planets, suns)
-
-    # carry, [a] => (carry, [b])
-    # state, None => (state, (old_policy_probs, new_policy_probs))
-    # state: trajectory_key, solar_systems
-    # [a]: None
-    def step_scanf(state, i):
-      solar_systems, scan_key = state
-
-      old_policy_step = get_decision_probs(old_policy_model_params, solar_systems) # (batch_size, actions)
-      new_policy_step = get_decision_probs(new_policy_model_params, solar_systems)
-
-      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
-      action = jrand.categorical(scan_key, old_policy_step, axis=-1) # (batch_size,)
-
-      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
-      solar_systems = step_simulation(solar_systems, action)
-      return (solar_systems, scan_key), (old_policy_step, new_policy_step) # state, b
-
-    ## SCAN OVER SIM STEPS
-    # pack
-    init_state = (solar_systems, trajectory_key)
-    # scan
-    state, policies = jax.lax.scan(step_scanf, init_state, None, length=trajectory_steps)
-    # unpack
-    solar_systems, trajectory_key = state
-    old_policy_trajectory_g, new_policy_trajectory_g = policies
-    # format axes (b, step, logits)
-    old_policy_trajectory_g = old_policy_trajectory_g.swapaxes(0, 1) # (step, batch, logits) => (batch, step, logits)
-    new_policy_trajectory_g = new_policy_trajectory_g.swapaxes(0, 1) # (step, batch, logits) => (batch, step, logits)
-
-    # end_reward = reward(state)
-    outcome_reward_g = jax.vmap(get_reward, in_axes=0)(solar_systems) # vmap over (batch,)
-    return old_policy_trajectory_g, new_policy_trajectory_g, outcome_reward_g
-
-  random_keys = jrand.split(key, G).reshape((G, 2)) # batching happens INSIDE run_single_trajectory_g
-  #key_func = functools.partial(run_single_trajectory_g, new_policy_model_params)
-  #vmap_func = jax.vmap(jax.vmap(run_single_trajectory_g))
-  old_policy, new_policy, outcome_rewards = jax.vmap(run_single_trajectory_g)(random_keys)
-  # in_axes=-1 because each key is a 1D array of two values. (batch, g, key_data) where key_data is always of size 2.
-
-  # advantages = (end_rewards - avg(end_rewards)) / standard_deviation(end_rewards)
-  advantages = (outcome_rewards - jnp.mean(outcome_rewards, axis=-1, keepdims=True)) / (jnp.std(outcome_rewards, axis=-1, keepdims=True) + 1e-7) # (batch, g)
-  # loss = - (1/G) * (1/2000) * sum_across_G(sum_across_steps((min(prob_ratios * advantages.extend(), min(prob_ratios, 1 + epsilon, 1 - epsilon)) - kl_divergence)))
-  advantages = advantages[:, :, jnp.newaxis, jnp.newaxis] # (batch, g, trajectory_steps, probs) => (batch, g, trajectory_steps, probs)
-  prob_ratios = new_policy / (old_policy + 1e-7)
-  kl_divergence = old_policy / (new_policy + 1e-7) - (jnp.log(old_policy + 1e-7) - jnp.log(new_policy + 1e-7)) - 1
-
-  # get loss for each g
-  xa = prob_ratios * advantages
-  xb = jnp.clip(prob_ratios, 1 + epsilon, 1 - epsilon) * advantages
-  xc = jnp.minimum(xa,xb)
-  xd = xc - (dkl_beta * kl_divergence)
-  xe = jnp.sum(xd, axis=-1) #* (1/7) # across logit axis (batch, g, step, logit) => (batch, g, step) 
-  xf = jnp.sum(xe, axis=-1) * (1/trajectory_steps) # across step axis (batch, g, step) => (batch, g) -- get loss for each g
-  xg = jnp.sum(xf, axis=-1) #* (1/batch_size) # combine all batch losses.
-  xh = jnp.sum(xg, axis=-1) * (1/G) # across g axis (batch, g) => batch. get loss for each batch.
-  loss = -xh
-  return loss
+# for a solar_system, run g trajectories.
+def run_single_trajectory(policy_model_params, solar_system, trajectory_horizon, trajectory_key):
+  # carry, [a] => (carry, [b])
+  # state, None => (state, (old_policy_probs, new_policy_probs))
+  # state: trajectory_key, solar_systems
+  # [a]: None
+  def scan_through_trajectory(state):
+    solar_systems, scan_key = state
+    decision_probs_oi = get_decision_probs(policy_model_params, solar_systems)
+    # roll scan_key and sample action from probs
+    scan_key, _ = jrand.split(scan_key, 2)
+    action = jrand.categorical(scan_key, decision_probs_oi, axis=-1) # Scalar
+    solar_system = step_simulation(solar_system, action)
+    return (solar_system, scan_key), (decision_probs_oi, solar_system) # state, b
+  ## SCAN OVER SIM STEPS
+  # pack
+  init_state = (solar_system, trajectory_key)
+  # scan
+  state, trajectory = jax.lax.scan(scan_through_trajectory, init_state, None, length=trajectory_horizon)
+  # unpack
+  solar_system_end_state, final_trajectory_key = state # scalar scalar
+  policy_outputs, trajectory_states = trajectory # (step, logits) (step, solar_system)
+  # end_reward = reward(state)
+  outcome_reward = get_reward(solar_system_end_state) # scalar
+  return policy_outputs, trajectory_states, outcome_reward # (trajectory_horizon, logits) (trajectory_horizon, solar_system) scalar
 
 
-@functools.partial(jax.jit, static_argnames=["G", "trajectory_steps", "planets", "suns", "batch_size"])
-def get_episode_rewards(new_policy_model_params, key,
-             G, trajectory_steps,
-             planets, suns, batch_size):
-  def run_single_trajectory_g(trajectory_key):
-    # init new state
-    trajectory_key, _ = jrand.split(trajectory_key, 2) # roll key
-    solar_systems = init_solarsystems(trajectory_key, batch_size, planets, suns)
-
-    # carry, [a] => (carry, [b])
-    # state, None => (state, (old_policy_probs, new_policy_probs))
-    # state: trajectory_key, solar_systems
-    # [a]: None
-    def step_scanf(state, i):
-      solar_systems, scan_key = state
-
-      new_policy_step = get_decision_probs(new_policy_model_params, solar_systems)
-
-      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
-      action = jrand.categorical(scan_key, new_policy_step, axis=-1) # (batch_size,)
-
-      scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
-      solar_systems = step_simulation(solar_systems, action)
-      next_step_rewards = jax.vmap(get_reward, in_axes=0)(solar_systems)
-      return (solar_systems, scan_key), (next_step_rewards) # state, b
-
-    ## SCAN OVER SIM STEPS
-    # pack
-    init_state = (solar_systems, trajectory_key)
-    # scan
-    state, intermittent_rewards_g = jax.lax.scan(step_scanf, init_state, None, length=trajectory_steps)
-    solar_systems, trajectory_key = state
-    # format axes (b, step, logits)
-    # end_reward = reward(state)
-    outcome_reward_g = jax.vmap(get_reward, in_axes=0)(solar_systems) # vmap over (batch,)
-    return intermittent_rewards_g, outcome_reward_g
-
-  random_keys = jrand.split(key, G).reshape((G, 2)) # batching happens INSIDE run_single_trajectory_g
-  intermittent_rewards, outcome_rewards = jax.vmap(run_single_trajectory_g)(random_keys)
-  return intermittent_rewards, outcome_rewards
+# def replay_single_trajectory()...
+def replay_single_trajectory(policy_model_params, solar_system, trajectory_horizon, trajectory_key):
+  def scan_through_trajectory(state):
+    solar_systems, scan_key = state
+    decision_probs_oi = get_decision_probs(policy_model_params, solar_systems)
+    scan_key, _ = jrand.split(scan_key, 2) # roll scan_key
+    action = jrand.categorical(scan_key, decision_probs_oi, axis=-1) # Scalar
+    solar_system = step_simulation(solar_system, action)
+    return (solar_system, scan_key), (decision_probs_oi, solar_system)
+  # pack
+  init_state = (solar_system, trajectory_key)
+  # scan
+  state, trajectory = jax.lax.scan(scan_through_trajectory, init_state, None, length=trajectory_horizon)
+  # unpack
+  solar_system_end_state, final_trajectory_key = state # scalar scalar
+  policy_outputs, trajectory_states = trajectory # (step, logits) (step, solar_system)
+  # end_reward = reward(state)
+  outcome_reward = get_reward(solar_system_end_state) # scalar
+  return policy_outputs, trajectory_states, outcome_reward # (trajectory_horizon, logits) (trajectory_horizon, solar_system) scalar
 
 
-# policy = init policy (model)
+
+
+# model hyperparams
 hidden_size = 64
 hidden_layers = 16
 input_datapoints = 3*4 + 3*4 + 1*4
 output_actions = 7 # lr/ud/bf/nothing
 
-# frozen model = a copy of this ( will not be updated)
-# learning model = this (will be updated)
-
-
-# policy model: the ML model
-# policy: the actual probs of the actions
-
-# sim stuff
+# sim hyperparams
 planets = 1
 suns = 3
 trajectory_horizon = 20 # run simulation for n steps
 
-# GRPO https://arxiv.org/pdf/2402.03300
+# GRPO hyperparams https://arxiv.org/pdf/2402.03300
 G = 64 # 512 # paper: 64 outputs
 batch_size = 128 # 16 # paper uses 1024
 update_old_policy = 20 # update every 10 iters
@@ -273,14 +145,19 @@ for iteration in range(I):
   M = 100
   for step in range(M):
     # sample a batch Db
-    solar_systems = init_solarsystems(key, batch_size, planets, suns)
+    solar_system_batch = init_solarsystems(key, batch_size, planets, suns) # (batch_size, solar_system)
     # old_policy = policy
     old_policy_model_params = policy_model_params
     # generate G outputs for each q in Db
-    old_policy_outputs, outcome_rewards = jax.vmap(run_g_trajectories, in_axes=(None, 0))(old_policy_model_params, solar_systems) # (g, batch, step_o, logprob), (g, batch)
+    solar_system_G = jnp.repeat(solar_system_batch[jnp.newaxis, :, :], G, axis=0) # (1, batch_size, solar_system) => (G, batch_size, solar_system)
+    run_batch_trajectory = jax.vmap(run_single_trajectory, in_axes=(None, 0, None, None))
+    run_group_trajectory = jax.vmap(run_batch_trajectory, in_axes=(None, 0, None, None))
+    old_policy_outputs, trajectory_states, outcome_rewards = run_group_trajectory(
+      old_policy_model_params, solar_system_G, trajectory_horizon
+      )  # (G, batch_size, trajectory_horizon, logits) (G, batch_size, trajectory_horizon, solar_system) (G, batch_size)
     # get the advantage across the g dim
-    A = (outcome_rewards - jnp.mean(outcome_rewards, axis=0, keepdims=True)) / jnp.std(outcome_rewards, axis=0, keepdims=True) # (g, batch)
-    A = A[:, :, jnp.newaxis, jnp.newaxis] # (g, batch) => (g, batch, step_o, logprobs). lets us do A * old_policy / new_policy
+    A = (outcome_rewards - jnp.mean(outcome_rewards, axis=0, keepdims=True)) / jnp.std(outcome_rewards, axis=0, keepdims=True) # (G, batch_size)
+    A = A[:, :, jnp.newaxis, jnp.newaxis] # (G, batch_size) => (G, batch_size, step_o, logprobs) ## lets us do A * old_policy / new_policy
     # new_policy = policy
     new_policy_model_params = policy_model_params
     # for j in jjjjjjjj:
@@ -288,22 +165,20 @@ for iteration in range(I):
     for GRPO_iteration in range(mu):
       # get_loss_outcome_supervised= 
         # do GRPO equation on the batches, trajectories, and old policy from the previous lines of code
+        # loss = (1/G)(1/O) * A * old_policy_model / new_policy_model
       # grads <- loss
       loss, grads = jax.value_and_grad(get_loss_outcome_supervised)(
-                      new_policy_model_params, old_policy_model_params
+                      new_policy_model_params,
+                      old_policy_outputs, trajectory_states, A,
+                      epsilon, dkl_beta
                     )
       # new_policy = update(new_policy, grads)
+      new_policy_model_params = jax.tree_util.tree_map(lambda p, g: p + g, new_policy_model_params, grads) # maximize 'loss'
     policy_model_params = new_policy_model_params
     # policy = new_policy
+
 
 
 end = time.time()
 
 save_model_params(new_policy_model_params) # to file
-
-
-# differences
-# - they train a reward model to come up with rewards
-    # mine just assigns each step the reward of the outcome
-    # actually nvm this was also in the paper as 'outcome supervision'
-# - they use a reference policy for KL divergence instead of old_policy (idk what this means)
