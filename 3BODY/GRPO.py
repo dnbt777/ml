@@ -103,7 +103,7 @@ def get_decision_logits(policy_model_params : PMParams, current_state):
   # 4 x (mass) = 4
   # ignore radius stuff
   # total = 12 + 12 + 4 = (batchsize, 28)
-  concatted = jax.vmap(safe_concat_current_state, in_axes=0)(current_state) # vmap across batch axis - this is the way to go, as opposed to writing batched functions
+  concatted = safe_concat_current_state(current_state) # vmap across batch axis - this is the way to go, as opposed to writing batched functions
   x = jax.nn.tanh(concatted @ policy_model_params.wi + policy_model_params.bi)
   # scanf : (carry, input_i) -> (next_carry, output_i)
   scanf = lambda x, hidden_layer : (jax.nn.tanh(x @ hidden_layer.weight + hidden_layer.bias), None)
