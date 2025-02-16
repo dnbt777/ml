@@ -11,3 +11,9 @@ Jax tips
 Physics simulation tips
 - for less bugs: downscale simulation values whenever possible
   - name variables downscaled_* and true_*
+
+
+Parallelized program design
+- Make base functions unbatched
+- Vmap them over batches
+- Don't include batches in SoA (current opinion, we'll see)
