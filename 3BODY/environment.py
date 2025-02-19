@@ -260,7 +260,7 @@ def get_reward(solar_system : SolarSystem) -> float:
 
     base = jax.nn.tanh((wattage_per_square_km - ideal_wattage_per_square_km) / (2 * death_margin))
     reward = 1 - 2*(base * base * base * base) # compileable two sided. too hot = bad, too cold = bad
-    return reward
+    return reward*100
 
 
 
