@@ -16,7 +16,9 @@ I am doing this in a community on X called ["LEARN BY BUILDING"](https://x.com/i
 Use GRPO to survive a 3-body physics simulation with rockets (in progress)
 
 
-Train a transformer on my x posts
+[Train a small (19.2M) transformer on the dictionary](https://x.com/dnbt777/status/1880140034239807640)
+![image](https://github.com/user-attachments/assets/dc191b53-95ff-48ec-9798-9957d9dc649b)
+
 
 
 [Train an RNN/LSTM on my x posts](FINISHED/LSTM/LSTM.md)
