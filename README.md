@@ -1,4 +1,4 @@
-# LEARN BY BUILDING: Practicing ML Experiments in Jax
+# LEARN BY BUILDING: ML Experiments from scratch in Jax
 
 this is my series on doing ML experiments in jax (forward pass from scratch, automated backwards pass) to get faster/better at ML
 
@@ -11,9 +11,16 @@ I am doing this in a community on X called ["LEARN BY BUILDING"](https://x.com/i
 ![alt text](res/lbb.png)
 
 
+# Projects in progress
+
+Use GRPO to survive a 3-body physics simulation with rockets (status: GRPO implemented, needs debugging)
+
+Double deep Q net that plays 6D snake (status: 2D version implemented, needs opengl renderer)
+
+
 # projects so far
 
-Use GRPO to survive a 3-body physics simulation with rockets (in progress)
+
 
 
 [Train a small (19.2M) transformer on the dictionary](https://x.com/dnbt777/status/1880140034239807640)
