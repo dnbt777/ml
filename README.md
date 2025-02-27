@@ -24,6 +24,7 @@ Double deep Q net that plays 6D snake (status: 2D version implemented, needs ope
 
 
 [Train a small (19.2M) transformer on the dictionary](https://x.com/dnbt777/status/1880140034239807640)
+
 ![image](https://github.com/user-attachments/assets/dc191b53-95ff-48ec-9798-9957d9dc649b)
 
 
