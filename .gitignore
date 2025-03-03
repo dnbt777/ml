@@ -30,5 +30,5 @@
 **/__pycache__/
 **/__pycache__/*
 **/MNIST/
-**/MNIST/*
+**/MNIST/**
 
