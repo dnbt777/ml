@@ -4,7 +4,8 @@
 # TLDs
 !FINISHED/
 !IN_PROGRESS/
-!FINISHED/**
+!IN_PROGRESS/*
+!FINISHED/*
 
 
 # Res/data
