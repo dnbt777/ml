@@ -13,15 +13,12 @@ I am doing this in a community on X called ["LEARN BY BUILDING"](https://x.com/i
 
 # Projects in progress
 
-Use GRPO to survive a 3-body physics simulation with rockets (status: [env implemented](https://x.com/dnbt777/status/1880936088648458420), GRPO implemented, needs debugging)
+Use GRPO to survive a 3-body physics simulation with rockets (status: [env implemented](https://x.com/dnbt777/status/1880936088648458420), GRPO works, but training needs refining)
 
-Double deep Q net that plays 6D snake (status: 2D version implemented, needs opengl renderer)
+Double deep Q net that plays 6D snake (status: 2D version implemented, needs opengl renderer, needs upgrade from regular DQN to double DQN)
 
 
 # projects so far
-
-
-
 
 [Train a small (19.2M) transformer on the dictionary](https://x.com/dnbt777/status/1880140034239807640)
 
