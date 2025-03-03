@@ -9,16 +9,22 @@
 
 # dirs
 !FINISHED/
-!FINISHED/*
-!FINISHED/**
 !res/
 !res/*
 !res/**
 !*/res/*
 
+# completed
+!FINISHED/CNN_REFACTOR/*
+!FINISHED/TRANSFORMER/*
+!FINISHED/CNN/*
+!FINISHED/LSTM/*
+!FINISHED/MLP_MNIST/*
+
+
 # WIP
-!3BODY/
-!3BODY/*
+!IN_PROGRESS/3BODY/
+!IN_PROGRESS/3BODY/*
 
 
 
