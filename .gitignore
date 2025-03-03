@@ -1,35 +1,32 @@
 # sphere mode
 *
 
-# file types
-!*.ipynb
-!*.md
-!*.png
-!*.py
-
-
-# dirs
+# TLDs
 !FINISHED/
-!IN_PROGRESS/
-!res/
-!res/*
-!res/**
-!*/res/*
+!IN_PROGRESS
+!FINISHED/**
+
+
+# Res/data
+!**/res/
+!**/res/**
+
 
 # completed
-!FINISHED/CNN_REFACTOR/*
-!FINISHED/TRANSFORMER/*
-!FINISHED/CNN/*
-!FINISHED/LSTM/*
-!FINISHED/MLP_MNIST/*
+!FINISHED/CNN_REFACTOR/**
+!FINISHED/TRANSFORMER/**
+!FINISHED/CNN/**
+!FINISHED/LSTM/**
+!FINISHED/MLP_MNIST/**
+
 
 # WIP
-!IN_PROGRESS/3BODY_GRPO/*
+!IN_PROGRESS/3BODY_GRPO/**
 
 
-
-*__pycache__/*
-*__pycache__/
+# Overwrite allow rules
+**/__pycache__/
+**/__pycache__/*
 **/MNIST/
 
 
