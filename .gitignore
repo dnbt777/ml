@@ -28,8 +28,5 @@
 
 # Overwrite allow rules
 **/__pycache__/
-**/__pycache__/*
 **/MNIST/
-**/MNIST/*
-**/MNIST/**
 
