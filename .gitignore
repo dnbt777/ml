@@ -9,6 +9,7 @@
 
 # dirs
 !FINISHED/
+!IN_PROGRESS/
 !res/
 !res/*
 !res/**
