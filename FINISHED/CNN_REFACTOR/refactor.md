@@ -39,7 +39,7 @@ jitted most of the training process
 Changed weight initialization from glorot to xavier 
 
 ## Result
-Increased train samples/sec from 65.76 to 86,101.
+Increased train samples/sec from 65.76 to 709.5 ~~86,101~~ (I miscalculated bc of messed up batch logic! oops)
 
 tbh, this is overkill for MNIST
 

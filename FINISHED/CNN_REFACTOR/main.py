@@ -43,8 +43,8 @@ optimizer = optax.adam(learning_rate)
 opt_state = optimizer.init(cnn_params)
 
 # train loop params
-epochs = 50
-train_batch_size = 8192
+epochs = 1 
+train_batch_size = 512 
 
 
 
@@ -58,19 +58,21 @@ start = time.time()
 
 # Train!
 for epoch in range(epochs):
-  batches = x_train.shape[0] // train_batch_size
-  total_samples = batches*train_batch_size
+  train_batches = x_train.shape[0] // train_batch_size
+  total_samples = train_batches*train_batch_size
   # prep train data - randomize and reshape into batches
   train_indices = jrand.permutation(rolling_key, x_train.shape[0])
   rolling_key, _ = jrand.split(rolling_key, 2)
   x_train_randomized = x_train[train_indices][:total_samples] # make sure sample size is a multiple of batch size
   y_train_randomized = y_train[train_indices][:total_samples] # same indices, same x->y pairs
-  reshape_to_batch = lambda arr, batch_size: jnp.reshape(arr, (batch_size, arr.shape[0]//batch_size, *arr.shape[1:])) 
-  x_train_batches = reshape_to_batch(x_train_randomized, train_batch_size)
-  y_train_batches = reshape_to_batch(y_train_randomized, train_batch_size)
+  reshape_to_batch = lambda arr, batches: jnp.reshape(arr, (batches, arr.shape[0]//batches, *arr.shape[1:])) 
+  x_train_batches = reshape_to_batch(x_train_randomized, train_batches)
+  y_train_batches = reshape_to_batch(y_train_randomized, train_batches)
   # train over each batch
   # i attempted to jit this part, but the compute graph took up too much memory.
-  for batch_idx in range(batches):
+  print("training on batches")
+  for batch_idx in range(train_batches):
+    print(batch_idx)
     # get grads  from train data
     cnn_params, opt_state, loss = grad_update_step(cnn_params, x_train_batches[batch_idx], y_train_batches[batch_idx], opt_state, optimizer)
   # randomize test set, then get val loss and accuracy
@@ -79,7 +81,7 @@ for epoch in range(epochs):
   test_batch_size = train_batch_size//4
   val_loss, val_accuracy = get_accuracy(cnn_params, x_test[test_indices][:test_batch_size], y_test[test_indices][:test_batch_size])
   # print epoch results
-  print(f"epoch{epoch}/{epochs}|batch{batch_idx}/{batches}|loss={loss:0.4f}|val_loss={val_loss:0.4f}|val_accuracy={val_accuracy:0.5f}")
+  print(f"epoch{epoch}/{epochs}|batch{batch_idx}/{train_batches}|loss={loss:0.4f}|val_loss={val_loss:0.4f}|val_accuracy={val_accuracy:0.5f}")
 
 
 #########################
@@ -88,7 +90,7 @@ end = time.time()
 
 ## Print stats ##
 train_time = end - start
-samples = epochs*batches*train_batch_size
+samples = epochs*train_batches*train_batch_size
 samples_per_second = samples / train_time
 print(f"samples/sec={samples_per_second:0.4f}") # includes jit compilation time, which makes the rate seem slower
 

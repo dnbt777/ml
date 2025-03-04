@@ -12,9 +12,9 @@ def crossentropyloss(
   yhat = jax.nn.log_softmax(logits)
   return jnp.sum(-yhat * y)
 
-
+# 3x slower
 @jax.jit
-def convolve2D(
+def convolve2D_scan(
     layers: jax.Array,
     kernels: jax.Array
     ) -> jax.Array:
@@ -22,6 +22,15 @@ def convolve2D(
       layer = jax.scipy.signal.convolve(layers, kernel, mode="same")[0]
       return None, layer
   _, layers = jax.lax.scan(convolve_layer_scan_fn, None, kernels)
+  return layers
+
+
+@jax.jit
+def convolve2D(
+    layers: jax.Array,
+    kernels: jax.Array
+    ) -> jax.Array:
+  layers = jax.vmap(lambda kernel: jax.scipy.signal.convolve(layers, kernel, mode="same"), in_axes=0, out_axes=1)(kernels)[0]
   return layers
 
 
