@@ -69,13 +69,13 @@ def safe_concat_current_state(solar_system):
   )
 
 @jax.jit
-def get_decision_logits(policy_model_params: PMParams, current_state_batch):
+def model_forward(policy_model_params: PMParams, current_state_batch):
   # current_state shape:
   # 4 bodies:
   # 4 x (x, y, z) = 12
   # 4 x (v, v, v) = 12
   # 4 x (mass) = 4
-  # ignore radius stuff
+  # ignore radius
   # total = 12 + 12 + 4 = (batchsize, 28)
   concatted = jax.vmap(safe_concat_current_state, in_axes=0)(current_state_batch) # vmap across batch axis - this is the way to go, as opposed to writing batched functions
   # initial projection
@@ -83,7 +83,7 @@ def get_decision_logits(policy_model_params: PMParams, current_state_batch):
   # scan through each hidden layer
   # scanf : (carry, input_i) -> (next_carry, output_i)
   def scanf(x, hidden_layer_i):
-    next_x = x + jax.nn.tanh(x @ hidden_layer_i.weight + hidden_layer_i.bias)
+    next_x = x + jax.nn.relu(x @ hidden_layer_i.weight + hidden_layer_i.bias) # TODO relu causes grad explosion? debug why relu -> grad explosion (versus tanh)
     return next_x, None 
   x, _ = jax.lax.scan(scanf, x, policy_model_params.hidden_layers) # scan => (x, None)
   # final projection to output size
@@ -93,7 +93,7 @@ def get_decision_logits(policy_model_params: PMParams, current_state_batch):
 
 @jax.jit
 def get_decision_probs(policy_model_params: PMParams, current_state):
-  x = get_decision_logits(policy_model_params, current_state)
+  x = model_forward(policy_model_params, current_state)
   #x_safer = x - jnp.max(x, axis=-1, keepdims=True) # subtract by max along relevant axis. reduces nan https://eli.thegreenplace.net/2016/the-softmax-function-and-its-derivative/
   # nvm jax.nn.softmax already does safe softmax
   jax.config.update("jax_debug_infs", False)
@@ -105,7 +105,7 @@ def get_decision_probs(policy_model_params: PMParams, current_state):
 # pretrained. no epsilon
 @jax.jit
 def take_action(key, policy_model_params: PMParams, current_state):
-  logits = get_decision_logits(policy_model_params, current_state)
+  logits = model_forward(policy_model_params, current_state)
   # randomly choose action from policy
   action = jrand.categorical(key, logits, axis=-1)
   return action

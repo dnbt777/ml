@@ -12,7 +12,6 @@ import functools
 # momentum: true
 # distances (radius, sim size, velocity/accel/dist): downscaled
 
-
 # units
 # distance: meters
 # mass: kg
@@ -151,7 +150,8 @@ def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
 
     # honestly.. the indexes are small enough (0-3) that I should just jit with static args here
     # does not scale as planets scale (massive compile times). but we arent scaling planets.
-    @functools.partial(jax.jit, static_argnames=["body1_idx", "body2_idx"])
+    # @functools.partial(jax.jit, static_argnames=["body1_idx", "body2_idx"]) # sadly... cannot hash arrays
+    @jax.jit
     def get_change_in_velocity(solar_system, body1_idx, body2_idx):
         # get direction
         difference_vector = solar_system.bodies.position[body2_idx] - solar_system.bodies.position[body1_idx]
@@ -202,7 +202,8 @@ def step_simulation(solar_system : SolarSystem, action) -> SolarSystem:
     # get position based off of momentum
     # for each object:
         # object.position += dt * object.velocity
-    @functools.partial(jax.jit, static_argnames=["body_idx"])
+    # @functools.partial(jax.jit, static_argnames=["body_idx"])
+    @jax.jit
     def update_position(solar_system, body_idx):
         downscaled_velocity = solar_system.bodies.velocity[:, body_idx]
         downscaled_position_change = dt * downscaled_velocity

@@ -1,19 +1,16 @@
 import jax.numpy as jnp
 import jax.random as jrand
 import jax
-import functools
-from environment import init_solarsystems, step_simulation, get_reward
-from GRPO import get_decision_probs, init_policy_model
-from file_utils import load_model_params, save_model_params
+from GRPO import init_policy_model
+from file_utils import save_model_params
 from train_utils import *
 import time
 
 
-# todo:
-# figure out why grads are 0. where precisely is this happening?
-# possibly debug w vjp and pullback
-# https://www.kaggle.com/code/goktugguvercin/automatic-differentiation-in-jax#Pushforward-and-Pullback:
-# create train_utils and then jit the entire training process there
+# TODO CLEANUP: replace all glob imports with precise ones
+# TODO CLEANUP: add proper type signatures to all functions
+
+
 
 
 ###### --------------- ##
@@ -55,8 +52,8 @@ else:
   import warnings
   warnings.filterwarnings("ignore")
 
-# TODO
-# hyperparameter optimization?
+
+# TODO hyperparameter optimization - convert hparams to structure and then sweep across SoA (pmap + cloud GPUs? create hparam_sweep.py)
 
 
 ###### --------- ######
@@ -78,6 +75,7 @@ MODEL_DTYPE = jnp.float32 # experimental, seems to train worse if not f32
 policy_model_params = jax.tree_util.tree_map(lambda arr: arr.astype(MODEL_DTYPE), policy_model_params)
 
 # train
+data = []
 for iteration in range(I):
     learning_rate = learning_rate*learning_rate_decay
     policy_model_params, mean_rewards, mean_objective, grad_norms = run_GRPO_iterations(
@@ -99,13 +97,17 @@ for iteration in range(I):
         dkl_beta,
     )
     print(f"I={iteration}|rewards={mean_rewards:.06f}|objective={mean_objective:.06f}|lr={learning_rate:.4e}")
-    print(grad_norms)
+    data.append((iteration, mean_objective, mean_rewards))
+    # print(grad_norms) (extremely useful if model is not learning)
 
 
 
 #################
 end = time.time()
-print(end - start, "seconds")
+duration = end - start
+grad_updates = I*M*mu
+samples_trained = grad_updates*batch_size*G
+print(f"{duration:0.2f}s, {samples_trained/duration:0.2f} samples/s")
 
 
 ##                ###
@@ -115,7 +117,7 @@ print(end - start, "seconds")
 import os
 import pandas as pd
 from matplotlib import pyplot as plt
-train_run_folder = "IN_PROGRESS/3BODY_GRPO/train_runs"
+train_run_folder = "./train_runs"
 existing_train_runs = len(os.listdir(train_run_folder))
 current_run = existing_train_runs + 1
 current_run_folder = f"{train_run_folder}/{current_run}"
@@ -123,11 +125,11 @@ os.mkdir(current_run_folder)
 # save model
 save_model_params(policy_model_params, f"{current_run_folder}/params.pkl")
 # save data
-col_names = ["iteration", "step", "GRPO_iteration", "objective", "outcome_rewards"]
+col_names = ["iteration", "objective", "outcome_rewards"]
 df = pd.DataFrame(data, columns=col_names)
 df.to_csv(f"{current_run_folder}/data.csv")
 # output plots
-xstep, objectives, avg_reward = zip(*[(I*iteration + mu*step + GRPO_iteration, objective, avg_reward) for iteration, step, GRPO_iteration, objective, avg_reward in data])
+xstep, objectives, avg_reward = zip(*[(I*iteration, objective, avg_reward) for iteration, objective, avg_reward in data])
 plt.figure(0)
 plt.plot(xstep, objectives)
 plt.title('step vs objective value')

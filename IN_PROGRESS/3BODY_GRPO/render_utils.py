@@ -8,6 +8,7 @@ from OpenGL.GLU import *
 # PIL for loading textures
 from PIL import Image
 
+## NOTE: Most of this is chatgpt generated. I usually use chatgpt for renderers when practicing ML stuff
 
 def init_skybox(skybox_image_path):
     """

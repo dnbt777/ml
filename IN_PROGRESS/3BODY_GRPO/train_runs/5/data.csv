@@ -1,1 +1,5 @@
-,iteration,step,GRPO_iteration,objective,outcome_rewards
+,iteration,objective,outcome_rewards
+0,0,-0.0052603697,-27.877357
+1,1,-0.0055884863,-27.939426
+2,2,-0.005790735,-27.943352
+3,3,-0.0063122315,-28.015984

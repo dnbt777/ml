@@ -37,8 +37,8 @@ hidden_size = 16
 hidden_layers = 10
 input_datapoints = 3*4 + 3*4 + 1*4
 output_actions = 7 # lr/ud/bf/nothing
-project_dir = "IN_PROGRESS/3BODY_GRPO"
-train_run_folder = f"{project_dir}/train_runs"
+project_dir = ""
+train_run_folder = f".{project_dir}/train_runs"
 
 # setup params that require conditional logic
 if render:
