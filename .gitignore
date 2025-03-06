@@ -30,3 +30,4 @@
 **/__pycache__/
 **/MNIST/
 **/.vscode/
+**/training_runs/
