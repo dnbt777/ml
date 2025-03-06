@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import flax
+import functools
 
 # jit is probably not necessary here.
 # since this func is only called inside other jitted functions, it automatically gets jitted
@@ -34,9 +35,11 @@ def convolve2D(
   return layers
 
 
-@jax.jit
+@functools.partial(jax.jit, static_argnames=["window_size"])
 def maxpool(
-    layers: jax.Array
+    layers: jax.Array,
+    window_size: int = 2
     ) -> jax.Array:
-  maxpool_channel = lambda channel: flax.linen.max_pool(channel[:, :, jnp.newaxis], window_shape=(2, 2))
+  window_shape = (window_size, window_size)
+  maxpool_channel = lambda channel: flax.linen.max_pool(channel[:, :, jnp.newaxis], window_shape=window_shape)
   return jax.vmap(maxpool_channel, in_axes=0)(layers)
