@@ -12,6 +12,7 @@ Jax tips
 - write your functions without specifying dtype. then, jit all code into one function. then specify the dtype of the inputs.
   - dtypes like float16 or bf16 decrease memory use and computation compared to the default jnp.float32 dtype
   - actuallly, I am having a hard time getting float16 or bf16 to train right. so take this with a grain of salt
+- when grad norms are 0: you can manually trace the operations that your variable goes through. literally manually follow the code path and see where that variable goes and how it determines the value of other variables. this comes up commonly and this is the most efficient solution I've found. there is other stuff with vjp/jvp and breaking down functions into small composable functions and testing the gradient of each, but that seems extremely inefficient
 
 Physics simulation tips
 - for less bugs: downscale simulation values whenever possible

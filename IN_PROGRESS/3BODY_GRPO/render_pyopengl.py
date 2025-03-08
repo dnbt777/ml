@@ -1,11 +1,12 @@
 import numpy as np
+import jax.numpy as jnp
 import time
 import jax.random as jrand
 import jax
 import os
 
 from environment import init_solarsystems, step_simulation, downscaled_simulation_size, get_reward, get_state_summary
-from GRPO import *
+from GRPO import init_policy_model, take_action, safe_concat_current_state 
 from file_utils import load_model_params
 
 # most important params
@@ -119,7 +120,7 @@ if render:
     # ---------------------------------------------------------------------
     # Skybox Setup
     # ---------------------------------------------------------------------
-    skybox_texture_id, quadric_sphere = init_skybox(f"{project_dir}/res/{SKYBOX}")
+    skybox_texture_id, quadric_sphere = init_skybox(f"./res/{SKYBOX}")
 
     # Initialize position history for fading trails
     position_history = np.zeros((TRAIL_LENGTH, solar_system.bodies.position.shape[1], 3))

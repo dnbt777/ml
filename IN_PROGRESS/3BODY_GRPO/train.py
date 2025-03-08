@@ -3,7 +3,7 @@ import jax.random as jrand
 import jax
 from GRPO import init_policy_model
 from file_utils import save_model_params
-from train_utils import *
+from train_utils import run_GRPO_iterations
 import time
 
 
@@ -17,37 +17,40 @@ import time
 #### - PARAM SETUP - ####
 ## --------------- ######
 
+# sim hyperparams
+planets = 1 # 1
+suns = 1 # 3 # TODO test 1 sun instead of 3
+trajectory_horizon = 50 # run simulation for n steps
+
 # model hyperparams
-hidden_size = 16 
-hidden_layers = 16 
-input_datapoints = 3*4 + 3*4 + 1*4
+hidden_size = 64 
+hidden_layers = 32 # TODO try shorter layers 
+input_datapoints = 3*4 + 3*4 + 1*4 # TODO update to calculate based on the suns and planets vars. will break in current form
 output_actions = 7 # lr/ud/bf/nothing
 
-# sim hyperparams
-planets = 1
-suns = 3
-trajectory_horizon = 200 # run simulation for n steps
 
 # GRPO hyperparams https://arxiv.org/pdf/2402.03300
-outcome_supervised = False
-G = 12 # 512 # paper: 64 outputs
+outcome_supervised = False 
+G = 128 # 512 # paper: 64 outputs
 batch_size = 8 # paper uses 1024
-epsilon = 0.3 # for clipping - https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
-dkl_beta = 0.03 # https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
+epsilon = 0.5 # for clipping - https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
+dkl_beta = 0.004 # https://medium.com/aureliantactics/ppo-hyperparameters-and-ranges-6fc2d29bccbe
 learning_rate = 3e-4
-learning_rate_decay = 0.9
+learning_rate_decay = 0.99
+
+# OPTIMIZATION THE PROBLEM IS THAT THE MODEL CAN'T SEE RIGHT!! ITS AN ARCHITECTURE AND ENV VISION PROBLEM!!!!
 
 # Train loop hyperparams
-I = 4 # iterations of M (and reference policy updates)
-M = 8 # iterations of GRPO generation. (Iterations before updating the old model)
-mu = 8 # iterations of grad updates on grpo results
+I = 200 # iterations of M (and reference policy updates)
+M = 4 # iterations of GRPO generation. (Iterations before updating the old model)
+mu = 4 # iterations of grad updates on grpo results
 
 
 debug = False 
 if debug:
-  jax.config.update("jax_disable_jit", False)
-  jax.config.update("jax_debug_infs", True)
-  jax.config.update("jax_debug_nans", True)
+  jax.config.update("jax_disable_jit", True)
+  # jax.config.update("jax_debug_infs", True)
+  # jax.config.update("jax_debug_nans", True)
 else:
   import warnings
   warnings.filterwarnings("ignore")
@@ -71,13 +74,14 @@ rolling_key, _ = jrand.split(rolling_key, 2)
 data = [] # graphing progress
 
 # cast model to new dtype
-MODEL_DTYPE = jnp.float32 # experimental, seems to train worse if not f32
-policy_model_params = jax.tree_util.tree_map(lambda arr: arr.astype(MODEL_DTYPE), policy_model_params)
+# MODEL_DTYPE = jnp.float32 # experimental, seems to train worse if not f32
+# policy_model_params = jax.tree_util.tree_map(lambda arr: arr.astype(MODEL_DTYPE), policy_model_params)
 
 # train
 data = []
 for iteration in range(I):
     learning_rate = learning_rate*learning_rate_decay
+    rolling_key, _ = jrand.split(rolling_key, 2)
     policy_model_params, mean_rewards, mean_objective, grad_norms = run_GRPO_iterations(
         # giant arrays
         policy_model_params,
@@ -98,7 +102,8 @@ for iteration in range(I):
     )
     print(f"I={iteration}|rewards={mean_rewards:.06f}|objective={mean_objective:.06f}|lr={learning_rate:.4e}")
     data.append((iteration, mean_objective, mean_rewards))
-    # print(grad_norms) (extremely useful if model is not learning)
+    print(grad_norms) # (extremely useful if model is not learning)
+    # print(jax.tree_util.tree_map(jnp.mean, policy_model_params)) # print model average weight sizes
 
 
 

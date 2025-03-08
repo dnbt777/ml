@@ -44,7 +44,7 @@ conversion_to_true_distance = true_simulation_size / downscaled_simulation_size
 default_body_velocity = 29*1000 # m/s, earth orbit speed
 downscaled_default_body_velocity = default_body_velocity * conversion_to_downscaled_distance # m/s, earth orbit speed
 
-agent_body_velocity = 100000 # calculate to make realistic. google mass/energy efficiency
+agent_body_velocity = 100000/2 # calculate to make realistic. google mass/energy efficiency. the extra x10 at the end is so the model has an easy task to learn at first
 downscaled_agent_body_velocity = agent_body_velocity * conversion_to_downscaled_distance
 
 

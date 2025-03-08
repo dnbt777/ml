@@ -14,7 +14,7 @@ import time
 
 # @jax.jit # breaks :(
 def init_policy_model(init_key, hidden_layers, hidden_size, input_size, output_size):
-  xavier = jax.nn.initializers.xavier_uniform()
+  xavier = jax.nn.initializers.xavier_normal()
   initializer = lambda key, hidden_shape_w: xavier(key, hidden_shape_w)
   # get keys for random initialization
   io_init_keys = jrand.split(init_key, 2)
@@ -47,8 +47,8 @@ def init_policy_model(init_key, hidden_layers, hidden_size, input_size, output_s
 @jax.jit
 def safe_concat_current_state(solar_system):
   # sacrifices accuracy for num safety
-  velocity = jnp.ravel(solar_system.bodies.velocity)
-  safe_velocity = velocity / jnp.max(jnp.abs(velocity), axis=-1, keepdims=True)
+  simulation_velocity = jnp.ravel(solar_system.bodies.velocity)*1e6 # too small. model grad explodes to learn how to use 1e-8 range values.
+  safe_velocity = simulation_velocity / jnp.max(jnp.abs(simulation_velocity), axis=-1, keepdims=True)
   #norm_velocity = (velocity - jnp.mean(velocity, axis=-1, keepdims=True)) / jnp.std(velocity, axis=-1, keepdims=True) 
   # reason for disabling norm velocity: velocity needs to be precise, like position
   # should be false velocity? divide by sim size maybe? hmm...
@@ -62,11 +62,42 @@ def safe_concat_current_state(solar_system):
 
   return jax.lax.concatenate([
     position, # should be relative/small
-    velocity,
+    simulation_velocity,
     safe_mass
     ],
     dimension=0
   )
+
+
+
+# TODO make what the model sees relative to the planets position
+@jax.jit
+def safe_concat_current_state_relative(solar_system):
+  # sacrifices accuracy for num safety
+  simulation_velocity = jnp.ravel(solar_system.bodies.velocity)*1e6 # too small. model grad explodes to learn how to use 1e-8 range values.
+  relative_simulation_velocity = 
+  safe_velocity = simulation_velocity / jnp.max(jnp.abs(simulation_velocity), axis=-1, keepdims=True)
+  #norm_velocity = (velocity - jnp.mean(velocity, axis=-1, keepdims=True)) / jnp.std(velocity, axis=-1, keepdims=True) 
+  # reason for disabling norm velocity: velocity needs to be precise, like position
+  # should be false velocity? divide by sim size maybe? hmm...
+
+  mass = jnp.ravel(solar_system.bodies.mass)
+  safe_mass = mass / jnp.max(jnp.abs(mass), axis=-1, keepdims=True)
+  # OPTIMIZATION: relative masses may confuse the model. replace with safe_mass = mass / avg_sun_mass (a known constant)
+  #log_mass = jnp.log(mass)
+
+  position = jnp.ravel(solar_system.bodies.position) # not true position, but sim position
+
+  return jax.lax.concatenate([
+    position, # should be relative/small
+    simulation_velocity,
+    safe_mass
+    ],
+    dimension=0
+  )
+
+
+
 
 @jax.jit
 def model_forward(policy_model_params: PMParams, current_state_batch):
@@ -83,7 +114,7 @@ def model_forward(policy_model_params: PMParams, current_state_batch):
   # scan through each hidden layer
   # scanf : (carry, input_i) -> (next_carry, output_i)
   def scanf(x, hidden_layer_i):
-    next_x = x + jax.nn.relu(x @ hidden_layer_i.weight + hidden_layer_i.bias) # TODO relu causes grad explosion? debug why relu -> grad explosion (versus tanh)
+    next_x = jax.nn.tanh(x @ hidden_layer_i.weight + hidden_layer_i.bias) # TODO relu causes grad explosion? debug why relu -> grad explosion (versus tanh)
     return next_x, None 
   x, _ = jax.lax.scan(scanf, x, policy_model_params.hidden_layers) # scan => (x, None)
   # final projection to output size
@@ -96,9 +127,9 @@ def get_decision_probs(policy_model_params: PMParams, current_state):
   x = model_forward(policy_model_params, current_state)
   #x_safer = x - jnp.max(x, axis=-1, keepdims=True) # subtract by max along relevant axis. reduces nan https://eli.thegreenplace.net/2016/the-softmax-function-and-its-derivative/
   # nvm jax.nn.softmax already does safe softmax
-  jax.config.update("jax_debug_infs", False)
+  # jax.config.update("jax_debug_infs", False)
   p = jax.nn.softmax(x, axis=-1)
-  jax.config.update("jax_debug_infs", True)
+  # jax.config.update("jax_debug_infs", True)
   return p
 
 

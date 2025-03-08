@@ -24,25 +24,24 @@ import time
 ## ALL ##
 
 
-@functools.partial(jax.jit, static_argnames=["epsilon", "dkl_beta"])
+@functools.partial(jax.jit, static_argnames=["dkl_beta"])
 def get_objective(policy_model_params, reference_policy_outputs,
                                     old_policy_outputs, trajectory_states, A,
                                     epsilon, dkl_beta):
-    # set up keys, get shape sizes
-    G, batch_size, trajectory_horizon, _ = old_policy_outputs.shape # (G, batch_size, trajectory_horizon, logits)
     # replay all trajectories to get new_policy probs
     replay_group_trajectories = jax.vmap(replay_batch_trajectories, in_axes=(None, 0))            
     new_policy_outputs = replay_group_trajectories(policy_model_params, trajectory_states) # (G, batch_size, trajectory_horizon, logits)
     # outcome supervision GRPO equation
     # loss = - (1/G) * (1/2000) * sum_across_G(sum_across_steps((min(prob_ratios * advantages.extend(), min(prob_ratios, 1 + epsilon, 1 - epsilon)) - kl_divergence)))
-    prob_ratios = new_policy_outputs / (old_policy_outputs + 1e-7)
+    prob_ratios = new_policy_outputs / (old_policy_outputs + 1e-8)
+    # DEBUG: inspect new policy outputs. is it all 0s? if so, dive into replay batch trajectories.
     # get kl divergence
     ref_policy_ratio = reference_policy_outputs / (new_policy_outputs + 1e-7)
-    kl_divergence = ref_policy_ratio - jnp.log(ref_policy_ratio) - 1
+    kl_divergence = ref_policy_ratio - jnp.log(ref_policy_ratio + 1e-7) - 1
     # calculate the equations in parts
     # this gets compiled anyways, so its likely not memory inefficient
-    xa = prob_ratios * A
-    xb = jnp.clip(prob_ratios, min=1-epsilon, max=1+epsilon) * A
+    xa = prob_ratios*A
+    xb = jnp.clip(prob_ratios, min=1-epsilon, max=1+epsilon)*A
     xc = jnp.minimum(xa,xb)
     xd = xc - (dkl_beta * kl_divergence)
     # xe = jnp.sum(xd, axis=-1) #* (1/7) # across logit axis (batch, g, step, logit) => (batch, g, step) 
@@ -60,9 +59,6 @@ def replay_batch_trajectories(policy_model_params, trajectory_states):
         return None, decision_probs_oi
     # scan
     _, policy_outputs = jax.lax.scan(scan_through_trajectories, None, trajectory_states)
-    # scan has timewise axes for each batch. so swap
-    # policy_outputs = jnp.swapaxes(policy_outputs, 0, 1) # (G, traj_horizon, batch, decision) => (G, batch, traj_horizon, decision)
-    # DEBUG: check if axes make sense from the value returned from the scan
     return policy_outputs # (batch_size, trajectory_horizon, logits)
 
 
@@ -92,6 +88,7 @@ def run_batch_trajectories_outcome_supervised(policy_model_params, solar_system,
     solar_system_end_state, final_trajectory_key = state # scalar scalar
     policy_outputs, trajectory_states = trajectory # (step, logits) (step, solar_system)
     policy_outputs = jnp.swapaxes(policy_outputs, 0, 1) # (G, traj_horizon, batch, decision) => (G, batch, traj_horizon, decision)
+    trajectory_states = jax.tree_util.tree_map(lambda arr: jnp.swapaxes(arr, 0, 1), trajectory_states) # => solar_system(batch, step, ...)
     # end_reward = reward(state)
     outcome_reward = jax.vmap(get_reward, in_axes=0)(solar_system_end_state) # scalar
     return policy_outputs, trajectory_states, outcome_reward # (trajectory_horizon, logits) (trajectory_horizon, solar_system) scalar
@@ -135,7 +132,7 @@ def run_batch_trajectories_process_supervised(policy_model_params, solar_system,
 # train_steps(I)
     # GRPO_steps(M)
         # grad_update_iterasions(mu)
-@functools.partial(jax.jit, static_argnames=["mu", "epsilon", "dkl_beta"])
+@functools.partial(jax.jit, static_argnames=["mu", "dkl_beta"])
 def run_grad_update_iterations(
         # arrays and giant values
         policy_model_params: PMParams,
@@ -158,7 +155,7 @@ def run_grad_update_iterations(
             epsilon, dkl_beta
         )
         # maximize objective function
-        updated_params = jax.tree_util.tree_map(lambda p, g: p + g*learning_rate, params, grads) # element-wise sum of two structures
+        updated_params = jax.tree_util.tree_map(lambda p, g: p + g*learning_rate, params, grads)
         return updated_params, (objective, jax.tree_util.tree_map(jnp.linalg.norm, grads))
     updated_policy_model_params, output = jax.lax.scan(scan_fn, policy_model_params, None, length=mu)
     objectives, grad_norms = output
@@ -179,7 +176,6 @@ def run_grad_update_iterations(
     "outcome_supervised",
     "trajectory_horizon",
     "mu",
-    "epsilon",
     "dkl_beta",
 ])
 def run_GRPO_iterations(
@@ -201,6 +197,7 @@ def run_GRPO_iterations(
         dkl_beta: float,
         ) -> Tuple[PMParams, float, float]:
     reference_policy_model_params = policy_model_params # update reference policy
+    old_policy_model_params = policy_model_params # can be removed for efficiency, but makes the code harder to read and more error prone
     def scan_fn(params, scan_key):
         # sample a batch Db
         rolling_key, _ = jrand.split(scan_key, 2) # reroll key before every use
@@ -219,14 +216,14 @@ def run_GRPO_iterations(
         if outcome_supervised:
             run_group_trajectory = jax.vmap(run_batch_trajectories_outcome_supervised, in_axes=(None, 0, None, 0))
             old_policy_outputs, trajectory_states, outcome_rewards = run_group_trajectory(
-                params, solar_system_G, trajectory_horizon, trajectory_keys
+                old_policy_model_params, solar_system_G, trajectory_horizon, trajectory_keys
             )    # (G, batch_size, trajectory_horizon, logits) (G, batch_size, trajectory_horizon, solar_system) (G, batch_size)
             A = (outcome_rewards - jnp.mean(outcome_rewards, axis=0, keepdims=True)) / (1e-7 + jnp.std(outcome_rewards, axis=0, keepdims=True)) # (G, batch_size)
             A = A[:, :, jnp.newaxis, jnp.newaxis] # (G, batch_size) => (G, batch_size, step_o, logprobs)
         else:
             run_group_trajectory = jax.vmap(run_batch_trajectories_process_supervised, in_axes=(None, 0, None, 0))
             old_policy_outputs, trajectory_states, process_rewards = run_group_trajectory(
-                params, solar_system_G, trajectory_horizon, trajectory_keys
+                old_policy_model_params, solar_system_G, trajectory_horizon, trajectory_keys
             )
             # avr/std of R are across G and oi
             # A = (process_rewards - jnp.mean(process_rewards, axis=(0, 2), keepdims=True)) / (1e-7 + jnp.std(process_rewards, axis=(0, 2), keepdims=True))
