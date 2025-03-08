@@ -30,5 +30,5 @@
 **/__pycache__/
 **/MNIST/
 **/.vscode/
-**/training_runs/
+**/train_runs/
 *.safetensors
