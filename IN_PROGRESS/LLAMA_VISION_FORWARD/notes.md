@@ -1,8 +1,9 @@
 
 # TODO in this order:
 #######################
-# get runpod set up so I can do development on a 3090
-# implement param loading
+# get runpod set up so I can do development on a 3090 (DONE)
+# implement param loading (DONE)
+# implement tokenizer encoding and decoding (DONE)
 # implement forward pass and inference
 # test on a 3090
 # new project: multi gpu llama from scratch -> fine tune

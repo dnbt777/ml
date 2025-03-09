@@ -1,6 +1,5 @@
 import jax
 import jax.numpy as jnp
-import safetensors
 
 from safetensors.numpy import load_file
 from safetensors import safe_open
