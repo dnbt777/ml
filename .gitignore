@@ -24,6 +24,7 @@
 
 # WIP
 !IN_PROGRESS/3BODY_GRPO/**
+!IN_PROGRESS/LLAMA_VISION_FORWARD/**
 
 
 # Overwrite allow rules
@@ -32,3 +33,7 @@
 **/.vscode/
 **/train_runs/
 *.safetensors
+**/.venv/
+*.pub
+**/Llama/
+

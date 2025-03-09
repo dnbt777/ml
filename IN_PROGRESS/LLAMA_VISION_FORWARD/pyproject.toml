@@ -1,0 +1,11 @@
+[project]
+name = "llama-vision-forward"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "jax[cuda12]>=0.5.2",
+    "pillow>=11.1.0",
+    "safetensors>=0.5.3",
+]
