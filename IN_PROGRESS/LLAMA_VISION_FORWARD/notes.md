@@ -29,3 +29,8 @@ Create namedtuples for each of the components using the params in model.safetens
 
 ## Llama 3.1 architecture (the text component of 3.2)
 ![alt text](image.png)
+
+
+
+## GQA diagram
+![alt text](image-1.png)
