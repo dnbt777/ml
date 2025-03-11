@@ -1,10 +1,8 @@
-# LEARN BY BUILDING: ML Experiments from scratch in Jax
+# LEARN BY BUILDING: ML from scratch in Jax
 
-this is my series on doing ML experiments in jax (forward pass from scratch, automated backwards pass) to get faster/better at ML
+in this repo I train my skills in ML by practicing implementing experiments in jax (from scratch, except the backwards pass), and optimizing them
 
-in this repo I train my skills in ML by practicing implementing experiments in jax, and optimizing them
-
-jax is basically numpy but it can do autograd. this way I can focus on implementing networks without having to implement backprop by hand
+Jax is (basically) numpy but with autograd. This lets me focus on getting good at implementation/training details without tediously implementing backprop by hand
 
 I am doing this in a community on X called ["LEARN BY BUILDING"](https://x.com/i/communities/1860178670687818191) where we build projects as a way to learn tech stuff: programming, robotics, etc. If you have something you want to learn, join, come up with a project, and post whenever you make progress!
 
@@ -13,9 +11,11 @@ I am doing this in a community on X called ["LEARN BY BUILDING"](https://x.com/i
 
 # Projects in progress
 
-Use GRPO to survive a 3-body physics simulation with rockets (status: [env implemented](https://x.com/dnbt777/status/1880936088648458420), GRPO works, but training needs refining)
+Use GRPO to survive a 3-body physics simulation with rockets (status: [env implemented](https://x.com/dnbt777/status/1880936088648458420), GRPO implemented, but training needs refining)
 
-Double deep Q net that plays 6D snake (status: 2D version implemented, needs opengl renderer, needs upgrade from regular DQN to double DQN)
+Double deep Q net that plays 6D snake (status: 2D version completed, needs opengl renderer, needs upgrade from regular DQN to double DQN)
+
+Llama 3.2 Vision 11B Inference (status: tokenization and param loading done)
 
 
 # projects so far
