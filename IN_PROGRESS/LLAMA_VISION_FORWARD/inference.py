@@ -3,6 +3,7 @@
             #$$%^@%*!@^@^#&#
 # --------------------------------------- #
 from setup_utils import load_model_params
+import time
 
 path = "./Llama"
 paths = [
@@ -11,8 +12,9 @@ paths = [
 ]
 # llama_params = load_as_jnp_dict(paths)
 print("Initializing...")
+start = time.time()
 llama_params = load_model_params(paths)
-print("Initialized.")
+print(f"Initialized in {time.time() - start:0.2f}s.")
 # --------------------------------------- #
 
 
@@ -44,12 +46,16 @@ print(f"Prompt: \"{prompt}\"")
 
 answer = ""
 # inference loop
+start = time.time()
 for i in range(100):
   context = prompt + answer
   context_tokens = jnp.array(encode(tokenizer, context))
-  next_token = inference(llama_params, tokenizer, context_tokens, temp, rolling_key)
-  answer += decode(tokenizer, next_token) 
-  print(next_token, end="")
+  next_token = inference(llama_params, context_tokens, temp, rolling_key)
+  if i == 0:
+    print(f"jitted in {time.time() - start:0.2f}s")
+  next_chunk = decode(tokenizer, jnp.array([next_token]))
+  answer += next_chunk 
+  print(str(next_chunk), end="")
   rolling_key, _ = jrand.split(rolling_key, 2)
   #if next_token == "<end token>":
   #  break # TODO add actual end token to inference loop
@@ -58,3 +64,7 @@ print("\nFinal output:")
 print("--------------")
 print(context)
 # ======================================== #
+
+
+# future optimizations:
+# OPTIMIZATION: Store jaxpr, somehow (compilation takes forever)

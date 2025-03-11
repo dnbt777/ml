@@ -43,6 +43,6 @@ def encode(tokenizer: Tokenizer, text: str) -> Tokens:
 # tokens -> text
 def decode(tokenizer: Tokenizer, tokens: Tokens) -> Text:
   vocab_list = list(tokenizer.vocab.keys())
-  if len(tokens) == 1:
-      return vocab_list[int(token)].replace(BPE_SPACE_CHAR, " ")
+  if tokens.shape[0] == 1:
+      return vocab_list[int(tokens[0])].replace(BPE_SPACE_CHAR, " ")
   return ("".join([vocab_list[int(token)] for token in tokens])).replace(BPE_SPACE_CHAR, " ")

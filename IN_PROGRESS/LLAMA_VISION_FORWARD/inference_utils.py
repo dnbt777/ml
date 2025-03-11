@@ -11,10 +11,9 @@ from tokenizer import encode, decode
 
 # TODO make sure all ops are bfloat16 or float16
 # TODO for training DEFINITELY make sure all ops are bfloat16
-#@functools.partial(jax.jit, static_argnames=["temp"]) # sadly, doesn't work bc of strings.
+@functools.partial(jax.jit, static_argnames=["temp"]) # sadly, doesn't work bc of strings.
 def inference(
     model_params: LlamaParams,
-    tokenizer: Tokenizer,
     context_tokens: Tokens,
     temp: float,
     key: jax.Array) -> Token:

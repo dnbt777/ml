@@ -30,7 +30,7 @@ ImageFloat32: TypeAlias = jax.Array # PIL uses float32 for F mode.
 # text -> embeddings
 
 
-
+@jax.jit
 def layer_norm(x, weight):
   # ASSUMPTION: layer norm is axis=-1
   # ASSUMPTION: we dont need to add eta to the std in this divide
@@ -38,7 +38,8 @@ def layer_norm(x, weight):
   return x
 
 
-
+# TODO for some reason, it is re-jitting functions every time a token is generated. fix this
+@jax.jit
 def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC) -> TensorBTC:
   # input layernorm
   xBTC = layer_norm(xBTC, layer_params.input_layernorm_weight)
@@ -48,31 +49,22 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   B, T, C  = xBTC.shape
   H_Q = 32 # TODO replace the hardcoding
   H_KV = 8 # GQA kv-heads
-  
-  # do self attention 
-  #Q = xBHTd @ layer_params.self_attn_q_proj_weight  # (BHTd) @ (d, d_k) => (B, H, T, d_k)
-  #K = xBHTd @ layer_params.self_attn_k_proj_weight # (BHTD) @ (d, d_k) => (B, H, T, d_k)
-  #Kt = jnp.swapaxes(K, 2, 3)  # (B, H, T, d_k) => (B, H, d_k, T)
-  #d_k = Q.shape[-1]
-  #attention_scores = jax.nn.softmax(jnp.einsum("BHTd,BHdT->BHTT", Q, Kt) / jnp.sqrt(d_k))  # (B, H, T, T)
-  #V = xBHTd @ layer_params.self_attn_v_prok_weight # (BHTD) # (d, d_v) => (B, H, T, d_v) 
-  # Z = V @ attention_scores   # (B,H,T,T) @ (B,H,T,d_v) => (B, H, T, d_v)
 
-  Q = xBTC @ layer_params.self_attn_q_proj_weight  # (BTC) @ (d, d_k) => (B, T, d_k)
-  K = xBTC @ layer_params.self_attn_k_proj_weight # (BTC) @ (d, d_k) => (B, T, d_k)
-  V = xBTC @ layer_params.self_attn_v_prok_weight # (BTC) @ (d, d_v) => (B, T, d_v) 
+  Q = xBTC @ jnp.transpose(layer_params.self_attn_q_proj_weight)  # (BTC) @ (d, d_k) => (B, T, d_k)
+  K = xBTC @ jnp.transpose(layer_params.self_attn_k_proj_weight) # (BTC) @ (d, d_k) => (B, T, d_k)
+  V = xBTC @ jnp.transpose(layer_params.self_attn_v_proj_weight) # (BTC) @ (d, d_v) => (B, T, d_v) 
   # attention heads and KV-groups are introduced at the QKV stage
   Q = jnp.reshape(Q, (B, H_Q, T, Q.shape[-1]//H_Q)) # (B, T, d_k) => (B, H, T, d_k//H_Q)
-  K = jnp.reshape(Q, (B, H_KV, T, K.shape[-1]//H_KV)) # (B, T, d_k) => (B, G, T, d_k//H_KV)
-  V = jnp.reshape(Q, (B, H_KV, T, V.shape[-1]//H_KV)) # (B, T, d_v) => (B, G, T, d_v//H_KV)
+  K = jnp.reshape(K, (B, H_KV, T, K.shape[-1]//H_KV)) # (B, T, d_k) => (B, G, T, d_k//H_KV)
+  V = jnp.reshape(V, (B, H_KV, T, V.shape[-1]//H_KV)) # (B, T, d_v) => (B, G, T, d_v//H_KV)
   Kt = jnp.swapaxes(K, 2, 3)  # (B, H, T, d_k) => (B, H, d_k//H, T)
   d_k = Q.shape[-1]
   # Compute attention scores. H = H_Q, h = H_KV. h is smaller so is broadcast
-  attention_scores = jax.nn.softmax(jnp.einsum("BHTd,BhdT->BHTT", Q, Kt) / jnp.sqrt(d_k))  # (B,H_Q,T,d_k//H_Q) @ (B,H_KV,T,d_K//H_KV) => (B, H_Q, T, T)
-  Z = V @ attention_scores   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
+  attention_scores = jax.nn.softmax(jnp.einsum("BHTd,Bhdt->BHTt", Q, Kt) / jnp.sqrt(d_k))  # (B,H_Q,T,d_k//H_Q) @ (B,H_KV,T,d_K//H_KV) => (B, H_Q, T, T)
+  Z = jnp.einsum("BHTT,BhTd->BHTd", attention_scores, V)   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
 
   # reshape back into xBTC_residual
-  Z = jnp.reshape(Z, (B, T, Z.shape[-1]*H_KV))  # (B, H, T, d_v//H_KV) => (B, T, d_v)
+  Z = jnp.reshape(Z, (B, T, Z.shape[-1]*H_Q))  # (B, H, T, d_v//H_KV) => (B, T, d_v)
 
   # project BHTd_v back to BHTd
   xBTC_residual = Z @ layer_params.self_attn_o_proj_weight # (B, T, d_v) @ (d_v, d) => B, T, d   i.e. (B,T,C)
@@ -81,10 +73,11 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   xBTC_residual = layer_norm(xBTC_residual, layer_params.post_attention_layernorm_weight)
 
   # feed forward w SwiGLU
+  # https://arxiv.org/pdf/2002.05202
   # ASSUMPTION: for ffn, its down(silu(gate(up(x)))), not silu(down(gate(up(x))))
-  xBTC_residual = xBTC_residual @ layer_params.mlp_up_proj_weight
-  xBTC_residual = jax.nn.swish(xBTC_residual @ layer_params.mlp_gate_proj_weight)
-  xBTC_residual = xBTC_residual @ layer_params.mlp_down_proj_weight
+  x1 = xBTC_residual @ jnp.transpose(layer_params.mlp_up_proj_weight)
+  x2 = jax.nn.swish(xBTC_residual @ jnp.transpose(layer_params.mlp_gate_proj_weight))
+  xBTC_residual = (x1*x2) @ jnp.transpose(layer_params.mlp_down_proj_weight)
   
   # skip connection
   xBTC = xBTC + xBTC_residual
@@ -113,21 +106,21 @@ def text_forward(model_params: LlamaParams, context_tokens: Tokens, temp: float)
   # set up the scan
   def scan_fn(xBTC, layer_params):
     xBTC = self_attention_layer(layer_params, xBTC)
-    return xBTC
+    return xBTC, None
   # do the scan
-  xBTC = jax.lax.scan(scan_fn, xBTC, model_params.language_model.model.self_attention_layers)
+  xBTC, _ = jax.lax.scan(scan_fn, xBTC, model_params.language_model.model.self_attention_layers)
   
   # layernorm and project to logits
-  xBTC = layer_norm(xBTC, model_params.lang_model.model.norm_weight)
-  yBTC = xBTC @ model_params.lang_model.lm_head_weight
+  xBTC = layer_norm(xBTC, model_params.language_model.model.norm_weight)
+  yBTC = xBTC @ jnp.transpose(model_params.language_model.lm_head_weight)
 
   # logits => logprobs
   # conditional branching is fine in jax.jit if the conditional is static
   if temp == 0:
-    yBTC_logprobs = jax.nn.log_softmax(xBTC, axis=-1)
+    yBTC_logprobs = jax.nn.log_softmax(yBTC, axis=-1)
   else:
     # ASSUMPTION: 1e-7 is not too large of an eta in the output of logprobs
-    yBTC_logprobs = jax.nn.log_softmax(xBTC/(temp + 1e-7), axis=-1)
+    yBTC_logprobs = jax.nn.log_softmax(yBTC/(temp + 1e-7), axis=-1)
   
   return yBTC_logprobs 
 
@@ -174,8 +167,8 @@ def forward(model_params: LlamaParams, xBTC: TensorBTC, xBTC_image: TensorBTC, t
   
   
   # layernorm and project to logits
-  xBTC = layer_norm(xBTC, model_params.lang_model.model.norm_weight)
-  yBTC = xBTC @ model_params.lang_model.lm_head_weight
+  xBTC = layer_norm(xBTC, model_params.language_model.model.norm_weight)
+  yBTC = xBTC @ model_params.language_model.lm_head_weight
 
   # logits => logprobs
   # conditional branching is fine in jax.jit if the conditional is static
