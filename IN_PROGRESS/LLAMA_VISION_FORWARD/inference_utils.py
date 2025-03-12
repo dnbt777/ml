@@ -2,16 +2,15 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrand
 import functools
-from llama_logic import text_forward 
+from llama_forward import text_forward 
 from llama_types import (
   Text, Tokens, Token, Tokenizer,
   LlamaParams,
 )
-from tokenizer import encode, decode
 
 # TODO make sure all ops are bfloat16 or float16
 # TODO for training DEFINITELY make sure all ops are bfloat16
-@functools.partial(jax.jit, static_argnames=["temp"]) # sadly, doesn't work bc of strings.
+@jax.jit
 def inference(
     model_params: LlamaParams,
     context_tokens: Tokens,
@@ -19,6 +18,7 @@ def inference(
     key: jax.Array) -> Token:
   # text -> tokens
   # batch[tokens] -> batch[tokens]  # fake batch of only 1
+  print("compiling inference")
   output_logprobs = text_forward(model_params, context_tokens[jnp.newaxis, ...], temp)
   
   # sample last logprob (jax.nn.categorical or whatever it was)

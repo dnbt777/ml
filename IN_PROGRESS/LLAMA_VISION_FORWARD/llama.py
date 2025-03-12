@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import jax.random as jrand
 import PIL
 
-from setup_utils import LlamaParams
+from load_params import LlamaParams
 from typing import TypeAlias
 
 # Type aliases for better static typing
