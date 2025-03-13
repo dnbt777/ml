@@ -37,8 +37,9 @@ def layer_norm(x, weight):
   return x
 
 
-# TODO for some reason, it is re-jitting functions every time a token is generated. fix this
-def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC) -> TensorBTC:
+# TODO make the mask different per-batch.
+@jax.jit
+def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC, mask: jax.Array) -> TensorBTC:
   # input layernorm
   xBTC = layer_norm(xBTC, layer_params.input_layernorm_weight)
 
@@ -58,8 +59,10 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   Kt = jnp.swapaxes(K, 2, 3)  # (B, H, T, d_k) => (B, H, d_k//H, T)
   d_k = Q.shape[-1]
   # Compute attention scores. H = H_Q, h = H_KV. h is smaller so is broadcast
-  attention_scores = jax.nn.softmax(jnp.einsum("BHTd,Bhdt->BHTt", Q, Kt) / jnp.sqrt(d_k))  # (B,H_Q,T,d_k//H_Q) @ (B,H_KV,T,d_K//H_KV) => (B, H_Q, T, T)
-  Z = jnp.einsum("BHTT,BhTd->BHTd", attention_scores, V)   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
+  attention_table = jnp.einsum("BHTd,Bhdt->BHTt", Q, Kt) / jnp.sqrt(d_k) # (B,H_Q,T,d_k//H_Q) @ (B,H_KV,T,d_K//H_KV) => (B, H_Q, T, T)
+  attention_scores = jax.nn.softmax(mask + attention_table, axis=(-2, -1)) # ASSUMPTION: does not need axis=-1, -2
+  Z = jnp.einsum("BHtT,BhTd->BHtd", attention_scores, V)   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
+  # bug: "BHTT,BhTd->BHTd" breaks this. future: don't use the same letter twice. be specific about the dimensions in the operation
 
   # reshape back into xBTC_residual
   Z = jnp.reshape(Z, (B, T, Z.shape[-1]*H_Q))  # (B, H, T, d_v//H_KV) => (B, T, d_v)
@@ -89,15 +92,20 @@ def embed_tokens(lang_model_params: LangModel, batch_tokens: TensorBT) -> Tensor
   return token_embeddings
 
 
+def rope():
+  pass
+
 # trainable if needed
 # TODO: implement text llama 3.1 first and test it
 # model -> TensorBTC -> TensorBTC -> float -> TensorBTC
 @jax.jit
 def text_forward(model_params: LlamaParams, context_tokens: Tokens, temp: float) -> LogProbsBT:
-  print("compiling text_forward")
+  ### PADDING MASK
+  non_padding_tokens = (context_tokens != 128004)
+  padding_mask = jnp.where(~jnp.outer(non_padding_tokens, non_padding_tokens), -jnp.inf, 0)
+  
   ### TEXT EMBEDDINGS
   xBTC_text = embed_tokens(model_params.language_model, context_tokens)
-  context_mask = ~(context_tokens == -1) # mask out all empty tokens i.e. -1
   xBTC = xBTC_text
 
   ### TRANSFORMER
@@ -105,11 +113,10 @@ def text_forward(model_params: LlamaParams, context_tokens: Tokens, temp: float)
   # replacing for loops w scans reduces compile time and memory from the jitted compute graph
   # set up the scan
   def scan_fn(xBTC, layer_params):
-    xBTC = self_attention_layer(layer_params, xBTC)
+    xBTC = self_attention_layer(layer_params, xBTC, padding_mask)
     return xBTC, None
   # do the scan
-  self_attention_layers = model_params.language_model.model.self_attention_layers.mlp_up_proj_weight.shape[0]
-  xBTC, _ = jax.lax.scan(scan_fn, xBTC, model_params.language_model.model.self_attention_layers, length=self_attention_layers)
+  xBTC, _ = jax.lax.scan(scan_fn, xBTC, model_params.language_model.model.self_attention_layers)
   
   # layernorm and project to logits
   xBTC = layer_norm(xBTC, model_params.language_model.model.norm_weight)
@@ -117,14 +124,10 @@ def text_forward(model_params: LlamaParams, context_tokens: Tokens, temp: float)
 
   # logits => logprobs
   # conditional branching is fine in jax.jit if the conditional is static
-  #if temp == 0:
-  yBTC_logprobs = jax.nn.log_softmax(yBTC, axis=-1)
-  #else:
-  #  # ASSUMPTION: 1e-7 is not too large of an eta in the output of logprobs
-  #  yBTC_logprobs = jax.nn.log_softmax(yBTC/(temp + 1e-7), axis=-1)
+  # ASSUMPTION: 1e-7 is not too large of an eta in the output of logprobs
+  yBTC_logprobs = jax.nn.log_softmax(yBTC/(temp + 1e-7), axis=-1)
   
   return yBTC_logprobs 
-
 
 
 

@@ -18,11 +18,12 @@ def inference(
     key: jax.Array) -> Token:
   # text -> tokens
   # batch[tokens] -> batch[tokens]  # fake batch of only 1
-  print("compiling inference")
   output_logprobs = text_forward(model_params, context_tokens[jnp.newaxis, ...], temp)
   
   # sample last logprob (jax.nn.categorical or whatever it was)
-  final_token_logprobs = output_logprobs[0][-1] # (B, T, logprob) => (logprob,)
+  padding_token = 128004
+  final_token_index = jnp.sum(context_tokens != padding_token)
+  final_token_logprobs = output_logprobs[0][final_token_index] # (B, T, logprob) => (logprob,)
   final_token_probs = jnp.exp(final_token_logprobs)
   output_token = jrand.categorical(key, final_token_probs)
 

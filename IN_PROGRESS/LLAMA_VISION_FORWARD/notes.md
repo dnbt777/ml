@@ -34,3 +34,7 @@ Create namedtuples for each of the components using the params in model.safetens
 
 ## GQA diagram
 ![alt text](image-1.png)
+
+
+# ROPE
+https://www.youtube.com/watch?v=o29P0Kpobz0
