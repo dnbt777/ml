@@ -27,6 +27,8 @@ from tokenizer import load_tokenizer, encode, decode
 
 path = 'Llama/tokenizer.json'
 tokenizer = load_tokenizer(path)
+padding_token = 128004
+
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 
 
@@ -54,7 +56,7 @@ start = time.time()
 for i in range(100):
   context = prompt + answer
   context_tokens = jnp.array(encode(tokenizer, context))
-  context_tokens = jnp.pad(context_tokens, context_window_size - context_tokens.shape[0], constant_values=-1)
+  context_tokens = jnp.pad(context_tokens, (0, context_window_size - context_tokens.shape[0]), constant_values=padding_token)
   print("got context")
   next_token = inference(llama_params, context_tokens, temp, rolling_key)
   if i == 0:

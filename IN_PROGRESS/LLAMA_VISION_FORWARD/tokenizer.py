@@ -46,3 +46,98 @@ def decode(tokenizer: Tokenizer, tokens: Tokens) -> Text:
   if tokens.shape[0] == 1:
       return vocab_list[int(tokens[0])].replace(BPE_SPACE_CHAR, " ")
   return ("".join([vocab_list[int(token)] for token in tokens])).replace(BPE_SPACE_CHAR, " ")
+
+
+
+def pretokenizer(preprocessor: Tokenizer, text: Text) -> Text:
+  """
+    "pre_tokenizer": {
+      "type": "Sequence",
+      "pretokenizers": [
+        {
+          "type": "Split",
+          "pattern": {
+            "Regex": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1,3}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+          },
+          "behavior": "Isolated",
+          "invert": false
+        },
+        {
+          "type": "ByteLevel",
+          "add_prefix_space": false,
+          "trim_offsets": true,
+          "use_regex": false
+        }
+      ]
+    },"""
+  pass
+
+
+def post_processor(postprocessor: Tokenizer, text: Text) -> Text:
+  """
+    "post_processor": {
+      "type": "Sequence",
+      "processors": [
+        {
+          "type": "ByteLevel",
+          "add_prefix_space": true,
+          "trim_offsets": false,
+          "use_regex": true
+        },
+        {
+          "type": "TemplateProcessing",
+          "single": [
+            {
+              "SpecialToken": {
+                "id": "<|begin_of_text|>",
+                "type_id": 0
+              }
+            },
+            {
+              "Sequence": {
+                "id": "A",
+                "type_id": 0
+              }
+            }
+          ],
+          "pair": [
+            {
+              "SpecialToken": {
+                "id": "<|begin_of_text|>",
+                "type_id": 0
+              }
+            },
+            {
+              "Sequence": {
+                "id": "A",
+                "type_id": 0
+              }
+            },
+            {
+              "SpecialToken": {
+                "id": "<|begin_of_text|>",
+                "type_id": 1
+              }
+            },
+            {
+              "Sequence": {
+                "id": "B",
+                "type_id": 1
+              }
+            }
+          ],
+          "special_tokens": {
+            "<|begin_of_text|>": {
+              "id": "<|begin_of_text|>",
+              "ids": [
+                128000
+              ],
+              "tokens": [
+                "<|begin_of_text|>"
+              ]
+            }
+          }
+        }
+      ]
+    },"""
+  pass

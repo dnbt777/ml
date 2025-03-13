@@ -38,9 +38,9 @@ def layer_norm(x, weight):
   return x
 
 
-# TODO for some reason, it is re-jitting functions every time a token is generated. fix this
+# TODO make the mask different per-batch.
 @jax.jit
-def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC) -> TensorBTC:
+def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC, mask: jax.Array) -> TensorBTC:
   # input layernorm
   xBTC = layer_norm(xBTC, layer_params.input_layernorm_weight)
 
@@ -60,7 +60,8 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   Kt = jnp.swapaxes(K, 2, 3)  # (B, H, T, d_k) => (B, H, d_k//H, T)
   d_k = Q.shape[-1]
   # Compute attention scores. H = H_Q, h = H_KV. h is smaller so is broadcast
-  attention_scores = jax.nn.softmax(jnp.einsum("BHTd,Bhdt->BHTt", Q, Kt) / jnp.sqrt(d_k))  # (B,H_Q,T,d_k//H_Q) @ (B,H_KV,T,d_K//H_KV) => (B, H_Q, T, T)
+  attention_table = jnp.einsum("BHTd,Bhdt->BHTt", Q, Kt) / jnp.sqrt(d_k) # (B,H_Q,T,d_k//H_Q) @ (B,H_KV,T,d_K//H_KV) => (B, H_Q, T, T)
+  attention_scores = jax.nn.softmax(mask + attention_table, axis=(-2, -1)) # ASSUMPTION: does not need axis=-1, -2
   Z = jnp.einsum("BHTT,BhTd->BHTd", attention_scores, V)   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
 
   # reshape back into xBTC_residual
@@ -96,6 +97,10 @@ def embed_tokens(lang_model_params: LangModel, batch_tokens: TensorBT) -> Tensor
 # model -> TensorBTC -> TensorBTC -> float -> TensorBTC
 @functools.partial(jax.jit, static_argnames=["temp"])
 def text_forward(model_params: LlamaParams, context_tokens: Tokens, temp: float) -> LogProbsBT:
+  ### PADDING MASK
+  non_padding_tokens = (context_tokens != 128004)
+  padding_mask = ~jnp.outer(non_padding_tokens, non_padding_tokens) * (-jnp.inf)
+  
   ### TEXT EMBEDDINGS
   xBTC_text = embed_tokens(model_params.language_model, context_tokens)
   xBTC = xBTC_text
@@ -105,7 +110,7 @@ def text_forward(model_params: LlamaParams, context_tokens: Tokens, temp: float)
   # replacing for loops w scans reduces compile time and memory from the jitted compute graph
   # set up the scan
   def scan_fn(xBTC, layer_params):
-    xBTC = self_attention_layer(layer_params, xBTC)
+    xBTC = self_attention_layer(layer_params, xBTC, padding_mask)
     return xBTC, None
   # do the scan
   xBTC, _ = jax.lax.scan(scan_fn, xBTC, model_params.language_model.model.self_attention_layers)
