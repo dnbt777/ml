@@ -52,6 +52,9 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   Q = xBTC @ jnp.transpose(layer_params.self_attn_q_proj_weight)  # (BTC) @ (d, d_k) => (B, T, d_k)
   K = xBTC @ jnp.transpose(layer_params.self_attn_k_proj_weight) # (BTC) @ (d, d_k) => (B, T, d_k)
   V = xBTC @ jnp.transpose(layer_params.self_attn_v_proj_weight) # (BTC) @ (d, d_v) => (B, T, d_v) 
+  # RoPE 
+  Q = rope(Q)
+  K = rope(K)
   # attention heads and KV-groups are introduced at the QKV stage
   Q = jnp.reshape(Q, (B, H_Q, T, Q.shape[-1]//H_Q)) # (B, T, d_k) => (B, H, T, d_k//H_Q)
   K = jnp.reshape(K, (B, H_KV, T, K.shape[-1]//H_KV)) # (B, T, d_k) => (B, G, T, d_k//H_KV)
@@ -92,8 +95,39 @@ def embed_tokens(lang_model_params: LangModel, batch_tokens: TensorBT) -> Tensor
   return token_embeddings
 
 
-def rope():
-  pass
+def rope(channels: TensorBTC) -> TensorBTC:
+  """
+  channels: tensor of shape (B, T, Q)
+  rope(channels) applies rope_channel across each channel at each position T
+  example: rotated_channels = rope(Q)
+  """
+  B, T, Q = channels.shape
+  rope_each_channel = jax.vmap(rope_channel, in_axes=(1, 0))
+  positions = jnp.arange(T)
+  rotated_channels = rope_each_channel(channels, positions)
+  return rotated_channels
+
+
+def rope_channel(channel: jax.Array, position: int) -> jax.Array:
+  """
+  channel: the C in B, T, C.
+  frequencies = [th1, th1, th2, th2, ...]
+  output: channel, but rotated.
+  """
+  d = channel.shape[-1]
+  i = jnp.arange(d)
+  N = jnp.repeat(i, 2)
+  frequencies = jnp.float_power(N, -2*i/d)
+  cos = jnp.cos(position*frequencies)
+  sin = jnp.sin(position*frequencies)
+
+  even_indices = (jnp.arange(d) % 2 == 0).astype(int)
+  signs = jnp.where(even_indices.astype(bool), -jnp.ones(d), jnp.ones(d))
+  indices = jnp.arange(d) + 2*(even_indices)
+  channel_rotated = cos*channel + sin*channel[indices]*signs
+  
+  return channel_rotated
+
 
 # trainable if needed
 # TODO: implement text llama 3.1 first and test it

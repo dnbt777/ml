@@ -38,3 +38,4 @@ Create namedtuples for each of the components using the params in model.safetens
 
 # ROPE
 https://www.youtube.com/watch?v=o29P0Kpobz0
+https://www.youtube.com/watch?v=SMBkImDWOyQ (this one has a great equation for RoPE)
