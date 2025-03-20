@@ -39,7 +39,7 @@ def layer_norm(x, weight):
 
 # TODO make the mask different per-batch.
 @jax.jit
-def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC, mask: jax.Array) -> TensorBTC:
+def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC, padding_mask: jax.Array) -> TensorBTC:
   # input layernorm
   xBTC = layer_norm(xBTC, layer_params.input_layernorm_weight)
 
@@ -63,7 +63,11 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   d_k = Q.shape[-1]
   # Compute attention scores. H = H_Q, h = H_KV. h is smaller so is broadcast
   attention_table = jnp.einsum("BHTd,Bhdt->BHTt", Q, Kt) / jnp.sqrt(d_k) # (B,H_Q,T,d_k//H_Q) @ (B,H_KV,T,d_K//H_KV) => (B, H_Q, T, T)
-  attention_scores = jax.nn.softmax(mask + attention_table, axis=(-2, -1)) # ASSUMPTION: does not need axis=-1, -2
+  # TODO add causal masking
+  causal_mask_shape = attention_table.shape[-2:]
+  causal_mask = jnp.triu(jnp.ones(causal_mask_shape), k=1).astype(bool)
+  causal_mask = jnp.where(causal_mask, -jnp.inf, 0)
+  attention_scores = jax.nn.softmax(padding_mask + causal_mask + attention_table, axis=-1) # ASSUMPTION: does not need axis=-1, -2
   Z = jnp.einsum("BHtT,BhTd->BHtd", attention_scores, V)   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
   # bug: "BHTT,BhTd->BHTd" breaks this. future: don't use the same letter twice. be specific about the dimensions in the operation
 
@@ -102,9 +106,10 @@ def rope(channels: TensorBTC) -> TensorBTC:
   example: rotated_channels = rope(Q)
   """
   B, T, Q = channels.shape
-  rope_each_channel = jax.vmap(rope_channel, in_axes=(1, 0))
+  rope_each_channel = jax.vmap(rope_channel, in_axes=(0, 0))
+  rope_each_batch = jax.vmap(rope_each_channel, in_axes=(0, None))
   positions = jnp.arange(T)
-  rotated_channels = rope_each_channel(channels, positions)
+  rotated_channels = rope_each_batch(channels, positions)
   return rotated_channels
 
 
@@ -116,8 +121,8 @@ def rope_channel(channel: jax.Array, position: int) -> jax.Array:
   """
   d = channel.shape[-1]
   i = jnp.arange(d)
-  N = jnp.repeat(i, 2)
-  frequencies = jnp.float_power(N, -2*i/d)
+  N = 50_000 # value from llama 3.1 #jnp.repeat(i, 2)
+  frequencies = jnp.float_power(N, -2*i/d) # can and should be precomputed. probably will be stored when compiled
   cos = jnp.cos(position*frequencies)
   sin = jnp.sin(position*frequencies)
 

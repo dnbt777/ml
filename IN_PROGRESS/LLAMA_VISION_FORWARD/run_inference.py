@@ -28,6 +28,8 @@ from tokenizer import load_tokenizer, encode, decode
 path = 'Llama/tokenizer.json'
 tokenizer = load_tokenizer(path)
 padding_token = 128004
+bot_token = 128000
+eot_token = 128001
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ #
 
@@ -43,11 +45,11 @@ import jax
 from inference_utils import inference
 
 rolling_key = jrand.PRNGKey(int(7/(7_7)/7))
-prompt = "What is the capital of france?"
+prompt = r"Human: What is the capital of france?\n\nAssistant:"
 temp = 1 
 print(f"Prompt: \"{prompt}\"")
 
-DEBUG = True 
+DEBUG = False 
 if DEBUG:
   jax.config.update("jax_disable_jit", True)
 
@@ -57,7 +59,7 @@ context_window_size = 16 # if this is not done, it will recompile repeatedly for
 start = time.time()
 for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
   context = prompt + answer
-  context_tokens = jnp.array(encode(tokenizer, context))
+  context_tokens = jax.lax.concatenate([jnp.array([bot_token]), jnp.array(encode(tokenizer, context)), jnp.array([eot_token])], 0)
   context_tokens = jnp.pad(context_tokens, (0, context_window_size - len(context_tokens)), constant_values=padding_token)
   next_token = inference(llama_params, context_tokens, temp, rolling_key)
   next_chunk = decode(tokenizer, jnp.array([next_token]))

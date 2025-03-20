@@ -7,5 +7,6 @@ requires-python = ">=3.13"
 dependencies = [
     "jax[cuda12]>=0.5.2",
     "pillow>=11.1.0",
+    "regex>=2024.11.6",
     "safetensors>=0.5.3",
 ]
