@@ -45,26 +45,27 @@ import jax
 from inference_utils import inference
 
 rolling_key = jrand.PRNGKey(int(7/(7_7)/7))
-prompt = r"Human: What is the capital of france?\n\nAssistant:"
-temp = 1 
+prompt = r"Hello"
+temp = 0.001 
 print(f"Prompt: \"{prompt}\"")
 
-DEBUG = False 
+DEBUG = True 
 if DEBUG:
   jax.config.update("jax_disable_jit", True)
 
 answer = ""
-context_window_size = 16 # if this is not done, it will recompile repeatedly forever at each new context window size
+context_window_size = 32 # if this is not done, it will recompile repeatedly forever at each new context window size
 # inference loop
 start = time.time()
 for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
   context = prompt + answer
-  context_tokens = jax.lax.concatenate([jnp.array([bot_token]), jnp.array(encode(tokenizer, context)), jnp.array([eot_token])], 0)
+  context_tokens = jax.lax.concatenate([jnp.array([bot_token]), jnp.array(encode(tokenizer, context))], 0)
   context_tokens = jnp.pad(context_tokens, (0, context_window_size - len(context_tokens)), constant_values=padding_token)
-  next_token = inference(llama_params, context_tokens, temp, rolling_key)
+  next_token, predicted_tokens = inference(llama_params, context_tokens, temp, rolling_key)
   next_chunk = decode(tokenizer, jnp.array([next_token]))
+  print(f"predicted: {decode(tokenizer, predicted_tokens)}")
   answer += next_chunk 
-  print(str(next_chunk), end="", flush=True)
+  #print(str(next_chunk), end="", flush=True)
   rolling_key, _ = jrand.split(rolling_key, 2)
   #if next_token == "<end token>":
   #  break # TODO add actual end token to inference loop
@@ -77,3 +78,4 @@ print(context)
 
 # future optimizations:
 # OPTIMIZATION: Store jaxpr, somehow (compilation takes forever)
+# TODO add a padding mask for each batch. currently a single padding mask is broadcast over all batches
