@@ -46,6 +46,7 @@ def load_model_params(paths: str) -> LlamaParams:
         language_model=LangModel(
             lm_head_weight=load_tensor("language_model.lm_head.weight"),
             model=LangModelModel(
+                embed_tokens=load_tensor("language_model.model.embed_tokens.weight"),
                 norm_weight=load_tensor("language_model.model.norm.weight"),
                 self_attention_layers=LangModelSelfAttentionLayer(
                     input_layernorm_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.input_layernorm.weight") for i in lang_model_self_attn_layers]),

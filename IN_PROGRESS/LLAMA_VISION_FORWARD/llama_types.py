@@ -49,6 +49,7 @@ class LangModelSelfAttentionLayer(NamedTuple):
 
 
 class LangModelModel(NamedTuple):
+    embed_tokens: jax.Array
     norm_weight: jax.Array 
     self_attention_layers: List[LangModelSelfAttentionLayer]
     cross_attention_layers: List[LangModelCrossAttentionLayer]

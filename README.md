@@ -15,7 +15,7 @@ Use GRPO to survive a 3-body physics simulation with rockets (status: [env imple
 
 Double deep Q net that plays 6D snake (status: 2D version completed, needs opengl renderer, needs upgrade from regular DQN to double DQN)
 
-Llama 3.2 Vision 11B Inference (status: tokenization and param loading done)
+Llama 3.2 Vision 11B Inference (status: forward pass needs debugging)
 
 
 # projects so far
@@ -37,3 +37,18 @@ Llama 3.2 Vision 11B Inference (status: tokenization and param loading done)
 ![alt text](res/cnn_post.png)
 
 Train an MLP on MNIST
+
+
+## goal
+become very fast at replicating papers and complex experiments/architectures
+milestones:
+- replicate 1 paper per 2 months
+- replcate 1 paper every month
+- replicate 1 paper every 2 weeks
+- replicate 1 paper every week
+- replicate 2 papers a week
+- 4
+- 7
+- replicate 2 papers a day
+
+(here, 'paper' means a model, or a custom experiment, or a random paper. this is not a super concrete metric bc of differences in paper difficulties, but it suffices)

@@ -62,6 +62,7 @@ for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
   context_tokens = jax.lax.concatenate([jnp.array([bot_token]), jnp.array(encode(tokenizer, context))], 0)
   context_tokens = jnp.pad(context_tokens, (0, context_window_size - len(context_tokens)), constant_values=padding_token)
   next_token, predicted_tokens = inference(llama_params, context_tokens, temp, rolling_key)
+  print("next chunk:", predicted_tokens)
   next_chunk = decode(tokenizer, jnp.array([next_token]))
   print(f"predicted: {decode(tokenizer, predicted_tokens)}")
   answer += next_chunk 

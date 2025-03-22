@@ -2,6 +2,7 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrand
 import functools
+from einops import rearrange
 import PIL
 
 from load_params import LlamaParams
@@ -53,7 +54,7 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   H_Q = 32 # TODO replace the hardcoding
   H_KV = 8 # GQA kv-heads
 
-  Q = xBTC @ jnp.transpose(layer_params.self_attn_q_proj_weight)  # (BTC) @ (d, d_k) => (B, T, d_k)
+  Q = xBTC @ jnp.transpose(layer_params.self_attn_q_proj_weight)  # (BTC) @ (d, d_k) => (B, T, d_q)
   K = xBTC @ jnp.transpose(layer_params.self_attn_k_proj_weight) # (BTC) @ (d, d_k) => (B, T, d_k)
   V = xBTC @ jnp.transpose(layer_params.self_attn_v_proj_weight) # (BTC) @ (d, d_v) => (B, T, d_v) 
   # RoPE 
@@ -61,17 +62,19 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   K = rope(K)
   # attention heads and KV-groups are introduced at the QKV stage
   # GQA
-  Q = jnp.reshape(Q, (B, H_Q, T, Q.shape[-1]//H_Q)) # (B, T, d_k) => (B, H_Q, T, d_k//H_Q)
-  K = jnp.reshape(K, (B, H_KV, T, K.shape[-1]//H_KV)) # (B, T, d_k) => (B, H_KV, T, d_k//H_KV)
-  V = jnp.reshape(V, (B, H_KV, T, V.shape[-1]//H_KV)) # (B, T, d_v) => (B, H_KV, T, d_v//H_KV)
-  # repeat K and V for GQA
-  KV_repetitions = H_Q // H_KV
-  K = jnp.repeat(K, KV_repetitions, axis=1) # (B, H_KV*reps, T, d_k//H_KV)
-  V = jnp.repeat(V, KV_repetitions, axis=1) # (B, H_KV*reps, T, d_k//H_KV)
-  Kt = jnp.swapaxes(K, 2, 3)  # (B, H, T, d_k) => (B, H, d_k//H, T)
-  d_k = Q.shape[-1]
-  # Compute attention scores. H = H_Q, h = H_KV. 
-  attention_table = jnp.einsum("BHTd,Bhdt->BHTt", Q, Kt) / jnp.sqrt(d_k) # (B,H_Q,T,d_k//H_Q) @ (B,H_KV,T,d_K//H_KV) => (B, H_Q, T, T)
+  d_Q = Q.shape[-1]//H_Q
+  d_KV = K.shape[-1]//H_KV
+  Q = jnp.reshape(Q, (B, T, H_Q, d_Q)) # (B, T, d_k) => (B, T, H_Q, d_Q)
+  Q = jnp.einsum("BTHD->BHTD", Q)
+  K = jnp.reshape(K, (B, T, H_KV, d_KV)) # (B, T, d_k) => (B, T, H_KV, d_KV)
+  K = jnp.einsum("BThd->BhTd", K)
+  V = jnp.reshape(V, (B, T, H_KV, d_KV)) # (B, T, d_v) => (B, T, H_KV, d_KV)
+  V = jnp.einsum("BThd->BhTd", V) # (B, T, H, D) => (B, H, T, D)
+  
+  G = H_Q // H_KV # groups
+  Q = rearrange(Q, "B (h G) T D -> B G h T D", G=G)
+  # Compute attention scores
+  attention_table = jnp.einsum("BGhTD,Bhtd->BGhTt", Q, K) / jnp.sqrt(d_KV) # (B,H_Q,T,d_Q) @ (B,H_Q,d_KV,T) => (B, H_Q, T, T)
   causal_mask_shape = attention_table.shape[-2:]
   causal_mask = jnp.triu(jnp.ones(causal_mask_shape), k=1).astype(bool)
   causal_mask = jnp.where(causal_mask, -jnp.inf, 0)
@@ -79,14 +82,16 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   key_padding_mask = jnp.where(padding_mask, 0, 1) # multiply post-softmax along the t dim in BHTt
   attention_scores = jax.nn.softmax(query_padding_mask + causal_mask + attention_table, axis=-1) # ASSUMPTION: does not need axis=-1, -2
   attention_scores = key_padding_mask[jnp.newaxis, ..., jnp.newaxis] * attention_scores # the final n rows should be all 0 (padding tokens)
-  Z = jnp.einsum("BHtT,BhTd->BHtd", attention_scores, V)   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
+  Z = jnp.einsum("BGhTt,Bhtd->BGhtd", attention_scores, V)   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
   # bug: "BHTT,BhTd->BHTd" breaks this. future: don't use the same letter twice. be specific about the dimensions in the operation
 
   # reshape back into xBTC_residual
-  Z = jnp.reshape(Z, (B, T, Z.shape[-1]*H_Q))  # (B, H, T, d_v//H_KV) => (B, T, d_v)
+  Z = rearrange(Z, "B G h T D -> B (G h) T D") # group the 4x8 heads into 32 heads
+  Z = rearrange(Z, "B H T D -> B T H D") # Swap head and time dim
+  Z = jnp.reshape(Z, (B, T, Z.shape[-1]*H_Q))  # (B, H_Q, T, d_KV) => (B, T, Z)
 
   # project BHTd_v back to BHTd
-  xBTC_attn_residual = Z @ layer_params.self_attn_o_proj_weight # (B, T, d_v) @ (d_v, d) => B, T, d   i.e. (B,T,C)
+  xBTC_attn_residual = Z @ jnp.transpose(layer_params.self_attn_o_proj_weight) # (B, T, Z) @ (Z, C) => B, T, C # ASSUMPTION does not need transposition
   return xBTC_attn_residual
 
 
@@ -140,7 +145,7 @@ def embed_tokens(lang_model_params: LangModel, batch_tokens: TensorBT) -> Tensor
   #vocab_size = lang_model_params.lm_head_weight.shape[0]
   #one_hot_tokens = jax.nn.one_hot(batch_tokens, vocab_size, axis=-1)
   #token_embeddings = one_hot_tokens @ lang_model_params.lm_head_weight
-  token_embeddings = jnp.take(lang_model_params.lm_head_weight, batch_tokens, axis=0)
+  token_embeddings = jnp.take(lang_model_params.model.embed_tokens, batch_tokens, axis=0)
   return token_embeddings
 
 
