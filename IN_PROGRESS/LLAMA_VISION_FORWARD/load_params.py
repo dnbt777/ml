@@ -134,3 +134,50 @@ def load_model_params(paths: str) -> LlamaParams:
     return llama_params
 
 
+
+# import json
+# config = json.load(f"{llama_path}/config.json")
+def load_text_model_params(paths: str) -> LlamaParams:
+    """
+    Outputs a LlamaParams loaded from safetensors
+    """
+    # get config
+    # TODO optimize getting config for model
+    lang_model_cross_attn_layers = [3, 8, 13, 18, 23, 28, 33, 38]
+    lang_model_self_attn_layers = [i for i in range(39+1) if i not in lang_model_cross_attn_layers]
+
+    def load_tensor(key):
+        for path in paths:
+            with safe_open(path, framework="numpy") as f:
+                if key in f.keys():
+                    tensor = f.get_tensor(key).astype("bfloat16")
+                    return jax.device_put(tensor)
+        raise KeyError(f"Tensor with key '{key}' not found")
+
+    llama_params = LlamaParams(
+        language_model=LangModel(
+            lm_head_weight=load_tensor("language_model.lm_head.weight"),
+            model=LangModelModel(
+                embed_tokens=load_tensor("language_model.model.embed_tokens.weight"),
+                norm_weight=load_tensor("language_model.model.norm.weight"),
+                self_attention_layers=LangModelSelfAttentionLayer(
+                    input_layernorm_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.input_layernorm.weight") for i in lang_model_self_attn_layers]),
+                    mlp_down_proj_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.mlp.down_proj.weight") for i in lang_model_self_attn_layers]),
+                    mlp_gate_proj_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.mlp.gate_proj.weight") for i in lang_model_self_attn_layers]),
+                    mlp_up_proj_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.mlp.up_proj.weight") for i in lang_model_self_attn_layers]),
+                    post_attention_layernorm_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.post_attention_layernorm.weight") for i in lang_model_self_attn_layers]),
+                    self_attn_k_proj_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.self_attn.k_proj.weight") for i in lang_model_self_attn_layers]),
+                    self_attn_o_proj_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.self_attn.o_proj.weight") for i in lang_model_self_attn_layers]),
+                    self_attn_q_proj_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.self_attn.q_proj.weight") for i in lang_model_self_attn_layers]),
+                    self_attn_v_proj_weight=jnp.array([load_tensor(f"language_model.model.layers.{i}.self_attn.v_proj.weight") for i in lang_model_self_attn_layers]),
+                ),
+                cross_attention_layers=None,
+            )
+        ),
+        vision_model=None,
+        multi_modal_projector=None,
+    )
+
+    return llama_params
+
+

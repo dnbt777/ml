@@ -10,6 +10,10 @@ def load_tokenizer(path):
     tokenizer_config = json.load(config)
   vocab = tokenizer_config["model"]["vocab"]
   merges = tokenizer_config["model"]["merges"]
+  # TODO add special tokens
+  additional_vocab = tokenizer_config["added_tokens"]
+  additional_vocab = dict([(entry["content"], entry["id"]) for entry in additional_vocab])
+  vocab.update(additional_vocab) # smh python
   return Tokenizer(
     vocab=vocab,
     merges=merges
