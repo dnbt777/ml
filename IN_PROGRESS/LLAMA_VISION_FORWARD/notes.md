@@ -43,3 +43,24 @@ https://www.youtube.com/watch?v=SMBkImDWOyQ (this one has a great equation for R
 
 # Llama from scratch (to double check implementation)
 https://github.com/naklecha/llama3-from-scratch
+
+
+
+
+# CHECKLIST
+vision encoder (local)
+  - image patching (TODO TEST)
+  - image embedding
+  - local transformer forward
+vision encoder (global)
+  - global transformer forward
+text model
+  - tokenizer DONE
+  - text embedding DONE
+  - self attn layers DONE
+  - cross attn layers
+  - project out (half done)
+inference loop
+
+
+

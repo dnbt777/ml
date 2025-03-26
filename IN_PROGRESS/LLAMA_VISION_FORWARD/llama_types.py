@@ -1,5 +1,5 @@
 import jax
-from typing import NamedTuple, List, TypeAlias, Union 
+from typing import NamedTuple, List, TypeAlias, Union
 
 
 ## Tokenizer types
@@ -119,8 +119,21 @@ class VisionModel(NamedTuple):
 
 
 
+
 class LlamaParams(NamedTuple):
     language_model: LangModel
     vision_model: VisionModel
     multi_modal_projector: MultiModalProjector
 
+
+
+
+# Type aliases for better static typing
+TensorBTC: TypeAlias = jax.Array
+TensorBC: TypeAlias = jax.Array
+TensorBT: TypeAlias = jax.Array
+TensorBTHd: TypeAlias = jax.Array
+LogProbsBT: TypeAlias = jax.Array
+ImageFloat32: TypeAlias = jax.Array # PIL uses float32 for F mode.
+
+AttentionLayer: TypeAlias = Union[VisionModelGlobalLayer, VisionModelLocalLayer, LangModelSelfAttentionLayer, LangModelCrossAttentionLayer]
