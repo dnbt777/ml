@@ -9,26 +9,8 @@ from llama_types import (
 )
 
 
-# TODO make the mask different per-batch.
-# TODO simplify GQA by doing the matmul first and not overcomplicating it
-@jax.jit
-def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC, padding_mask: jax.Array) -> TensorBTC:
-  # input layernorm
-  xBTC = RMSnorm(xBTC, layer_params.input_layernorm_weight)
-
-  # Reshape input into attention heads
-  # xBTC => xBHTd
-  B, T, C  = xBTC.shape
-  H_Q = 32 # TODO replace the hardcoding
-  H_KV = 8 # GQA kv-heads
-
-  Q = xBTC @ jnp.transpose(layer_params.self_attn_q_proj_weight)  # (BTC) @ (d, d_k) => (B, T, d_q)
-  K = xBTC @ jnp.transpose(layer_params.self_attn_k_proj_weight) # (BTC) @ (d, d_k) => (B, T, d_k)
-  V = xBTC @ jnp.transpose(layer_params.self_attn_v_proj_weight) # (BTC) @ (d, d_v) => (B, T, d_v) 
-  # RoPE 
-  Q = rope(Q)
-  K = rope(K)
-  # attention heads and KV-groups are introduced at the QKV stage
+# OPTIMIZATION: do matmul first, then break into heads just before softmax
+def GQA_attention(layer_params, Q, K, V, padding_mask, B, T, H_Q, H_KV):
   # GQA
   d_Q = Q.shape[-1]//H_Q
   d_KV = K.shape[-1]//H_KV
@@ -59,7 +41,36 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   Z = jnp.reshape(Z, (B, T, Z.shape[-1]*H_Q))  # (B, H_Q, T, d_KV) => (B, T, Z)
 
   # project BHTd_v back to BHTd
-  xBTC_attn_residual = Z @ jnp.transpose(layer_params.self_attn_o_proj_weight) # (B, T, Z) @ (Z, C) => B, T, C # ASSUMPTION does not need transposition
+  xBTC_attn_output = Z @ jnp.transpose(layer_params.self_attn_o_proj_weight) # (B, T, Z) @ (Z, C) => B, T, C # ASSUMPTION does not need transposition
+
+  return xBTC_attn_output
+
+
+
+# TODO make the mask different per-batch.
+# TODO simplify GQA by doing the matmul first and not overcomplicating it
+@jax.jit
+def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC, padding_mask: jax.Array) -> TensorBTC:
+  # input layernorm
+  xBTC = RMSnorm(xBTC, layer_params.input_layernorm_weight)
+
+  # Reshape input into attention heads
+  # xBTC => xBHTd
+  B, T, C  = xBTC.shape
+  H_Q = 32 # TODO replace the hardcoding
+  H_KV = 8 # GQA kv-heads
+
+  Q = xBTC @ jnp.transpose(layer_params.self_attn_q_proj_weight)  # (BTC) @ (d, d_k) => (B, T, d_q)
+  K = xBTC @ jnp.transpose(layer_params.self_attn_k_proj_weight) # (BTC) @ (d, d_k) => (B, T, d_k)
+  V = xBTC @ jnp.transpose(layer_params.self_attn_v_proj_weight) # (BTC) @ (d, d_v) => (B, T, d_v) 
+  # RoPE 
+  Q = rope(Q)
+  K = rope(K)
+  # attention heads and KV-groups are introduced at the QKV stage
+  
+  # GQA
+  xBTC_attn_residual = GQA_attention(layer_params, Q, K, V, padding_mask, B, T, H_Q, H_KV)
+
   return xBTC_attn_residual
 
 

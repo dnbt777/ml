@@ -38,10 +38,6 @@ def llama_forward(model_params: LlamaParams, image, context_tokens, temp: float)
     xBTC_postattn_residual = feed_forward(xBTC_postattn_residual, layer_params)
     xBTC = xBTC + xBTC_postattn_residual
     return xBTC, None
-  ## SETUP: TEXT + VISION
-  def scan_cross_attn_layers(xBTCs, TODO):
-    xBTC_text, xBTC_image = xBTCs
-    return  
   cross_attn_layers = [3, 8, 13, 18, 23, 28, 33, 38] # ASSUMPTION double check these layers
   layers_between_cross_attn_layers = [b - a for a, b in zip(cross_attn_layers, cross_attn_layers[:1])]
   ## RUN SCANS (manually pick layers for now ig)
@@ -50,7 +46,7 @@ def llama_forward(model_params: LlamaParams, image, context_tokens, temp: float)
     next_self_attn_layer = self_attn_layer + layers_between_cross_attn_layers
     cross_attn_layer = cross_attn_layers[cross_attn_layer_index]
     xBTC, _ = jax.lax.scan(scan_self_attn_layers, xBTC, model_params.language_model.model.self_attention_layers[self_attn_layer:next_self_attn_layer])
-    xBTC = cross_attention_layer(xBTC, model_params.language_model.model.cross_attention_layers[cross_attn_layer])
+    xBTC = cross_attention_layer(model_params.language_model.model.cross_attention_layers[cross_attn_layer], xBTC, xBTC_image, padding_mask)
     self_attn_layer = next_self_attn_layer
   
   ## OUTPUT

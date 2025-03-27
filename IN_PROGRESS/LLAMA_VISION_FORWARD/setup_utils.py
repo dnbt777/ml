@@ -20,6 +20,16 @@ def load_as_jnp_dict(paths: str) -> dict:
     
 
 
+def display_shapes(paths: str):
+    for path in paths:
+        tensors = load_file(path)
+        print("loaded", path)
+        for key, tensor in tensors.items():
+            print(f"{key}: {tensor.shape}, {tensor.dtype}")
+        del tensors 
+
+
+
 # import json
 # config = json.load(f"{llama_path}/config.json")
 def load_model_params(paths: str) -> LlamaParams:

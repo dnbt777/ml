@@ -4,11 +4,11 @@ import time
 import jax.random as jrand
 import jax.numpy as jnp
 import jax
-from inference_utils import inference
+from inference import inference
 from llama_forward import *
 
 
-DEBUG = True
+DEBUG =False 
 if DEBUG:
   jax.config.update("jax_disable_jit", True)
 
@@ -76,8 +76,8 @@ print("INFERENCE TEST")
 
 from PIL import Image
 
-url = "https://huggingface.co/datasets/huggingface/documentation-images/resolve/0052a70beed5bf71b92610a43a52df6d286cd5f3/diffusers/rabbit.jpg"
-image = Image.open(requests.get(url, stream=True).raw)
+image_path = "./image.png"
+image = Image.open(image_path)
 prompt = "<|image|><|begin_of_text|>What is 2 + 2?\nAnswer:"
 
 answer = ""
@@ -88,7 +88,7 @@ for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
   context = prompt + answer
   context_tokens = jax.lax.concatenate([jnp.array([bot_token]), jnp.array(encode(tokenizer, context))], 0)
   context_tokens = jnp.pad(context_tokens, (0, context_window_size - len(context_tokens)), constant_values=padding_token)
-  next_token, predicted_tokens = mm_inference(llama_params, image, context_tokens, temp, rolling_key)
+  next_token, predicted_tokens = inference(llama_params, image, context_tokens, temp, rolling_key)
   next_chunk = decode(tokenizer, jnp.array([next_token]))
   print("tokens:", predicted_tokens)
   print(f"predicted: {decode(tokenizer, predicted_tokens)}")

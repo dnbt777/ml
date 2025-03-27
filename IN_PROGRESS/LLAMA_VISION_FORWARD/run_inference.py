@@ -42,10 +42,13 @@ eot_token = 128001
 import jax.random as jrand
 import jax.numpy as jnp
 import jax
-from inference_utils import inference
+from inference import inference
+from vision_forward import image_to_patches
+from PIL import Image
 
 rolling_key = jrand.PRNGKey(int(7/(7_7)/7))
 prompt = r"Hello"
+image_path = "./image.png"
 temp = 0.001 
 print(f"Prompt: \"{prompt}\"")
 
@@ -57,6 +60,8 @@ answer = ""
 context_window_size = 32 # if this is not done, it will recompile repeatedly forever at each new context window size
 # inference loop
 start = time.time()
+image = Image.open(image_path)
+image_patches = image_to_patches(image, (224, 224), (32, 32))
 for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
   context = prompt + answer
   context_tokens = jax.lax.concatenate([jnp.array([bot_token]), jnp.array(encode(tokenizer, context))], 0)

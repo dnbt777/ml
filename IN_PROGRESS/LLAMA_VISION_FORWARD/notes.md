@@ -48,19 +48,18 @@ https://github.com/naklecha/llama3-from-scratch
 
 
 # CHECKLIST
-vision encoder (local)
-  - image patching (TODO TEST)
-  - image embedding
-  - local transformer forward
-vision encoder (global)
-  - global transformer forward
+vision encoder
+  - image patching (DONE)
+  - image embedding (IN PROGRESS) 
+  - local transformer forward (IN PROGRESS)
+  - global transformer forward (IN PROGRESS)
 text model
   - tokenizer DONE
   - text embedding DONE
   - self attn layers DONE
-  - cross attn layers
-  - project out (half done)
-inference loop
+  - cross attn layers (IN PROGRESS)
+  - project to output (half done)
+inference loop (DONE)
 
 
 
