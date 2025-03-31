@@ -14,12 +14,14 @@ from llama_types import (
 def inference(
     model_params: LlamaParams,
     context_tokens: Tokens,
-    image_patches: jax.Array,
+    image: jax.Array,
     temp: float,
     key: jax.Array) -> Token:
-  # text -> tokens
-  # batch[tokens] -> batch[tokens]  # fake batch of only 1
-  output_logprobs, output_logits = llama_forward(model_params, context_tokens[jnp.newaxis, ...], image_patches, temp)
+  # llama_forward takes batches of inputs
+  # purpose: faster fine tuning
+  image_batch = jnp.array(image, dtype="bfloat16")[jnp.newaxis, ...]
+  context_tokens_batch = context_tokens[jnp.newaxis, ...]
+  output_logprobs, output_logits = llama_forward(model_params, context_tokens_batch, image_batch, temp)
   
   # sample last logprob (jax.nn.categorical or whatever it was)
   padding_token = 128004

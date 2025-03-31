@@ -47,7 +47,7 @@ from vision_forward import image_to_patches
 from PIL import Image
 
 rolling_key = jrand.PRNGKey(int(7/(7_7)/7))
-prompt = r"Hello"
+prompt = r"<|image|><|begin_of_text|>Image description:"
 image_path = "./image.png"
 temp = 0.001 
 print(f"Prompt: \"{prompt}\"")
@@ -61,12 +61,14 @@ context_window_size = 32 # if this is not done, it will recompile repeatedly for
 # inference loop
 start = time.time()
 image = Image.open(image_path)
-image_patches = image_to_patches(image, (224, 224), (32, 32))
+image = jnp.array(image.resize((224, 224)), dtype="bfloat16")
+#image_patches = image_to_patches(image, (224, 224), (16, 16))
+print("IMG SHAPE: ", image.shape)
 for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
   context = prompt + answer
   context_tokens = jax.lax.concatenate([jnp.array([bot_token]), jnp.array(encode(tokenizer, context))], 0)
   context_tokens = jnp.pad(context_tokens, (0, context_window_size - len(context_tokens)), constant_values=padding_token)
-  next_token, predicted_tokens = inference(llama_params, context_tokens, temp, rolling_key)
+  next_token, predicted_tokens = inference(llama_params, context_tokens, image, temp, rolling_key)
   print("next chunk:", predicted_tokens)
   next_chunk = decode(tokenizer, jnp.array([next_token]))
   print(f"predicted: {decode(tokenizer, predicted_tokens)}")

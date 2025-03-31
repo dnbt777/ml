@@ -11,8 +11,6 @@ Text: TypeAlias = str
 Tokens: TypeAlias = jax.Array
 Token: TypeAlias = int
 
-## Linalg types
-
 
 ## Llama Model Types
 class MultiModalProjector(NamedTuple):
@@ -116,7 +114,6 @@ class VisionModel(NamedTuple):
     post_tile_positional_embedding_gate: jax.Array
     pre_tile_positional_embedding_embedding_weight: jax.Array
     pre_tile_positional_embedding_gate: jax.Array
-
 
 
 

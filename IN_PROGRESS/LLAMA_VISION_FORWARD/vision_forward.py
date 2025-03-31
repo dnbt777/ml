@@ -53,14 +53,23 @@ def unmasked_multihead_attention(attention_layer: AttentionLayer, xBTC: TensorBT
 
 
 
-def embed_patches(vision_model_params: VisionModel, patches: jax.Array) -> TensorBTC:
+def embed_patches(vision_model_params: VisionModel, image_batch: jax.Array) -> TensorBTC:
   # TODO I believe this should be conv based. inspect the shapes of patch_embedding_weight.
-  patches_flattened = rearrange(patches, "B P p h w c -> B (P p) h w c") # (1, 32, 32, 7, 7, 3) => (1, 1024, 147)
+  #patches_flattened = rearrange(patches, "B P p h w c -> B (P p) h w c") # (1, 32, 32, 7, 7, 3) => (1, 1024, 147)
   # just do the convolusion
-  jax.scipy.signal.convolve2d
-  imgBTC = jnp.einsum(
-     "BPHWC,OHWC->BPO",
-     patches_flattened, vision_model_params.patch_embedding_weight) # (B P C) => B T C = (1, 1024, 1280)
+  
+  print("shapes: ", image_batch.shape, vision_model_params.patch_embedding_weight.shape)
+  # (1, 224, 224, 4) convolve (1280, 3, 14, 14) => (1, 16, 16, 1280)
+  image_batch = image_batch[:, :, :, :3] # ignore alpha and just use first 
+  print("shapes: ", image_batch.shape, vision_model_params.patch_embedding_weight.shape)
+  imgBTC = jax.lax.conv_general_dilated(
+      image_batch,
+      vision_model_params.patch_embedding_weight,
+      (14, 14),
+      padding="valid",
+  )
+  print(imgBTC.shape)
+  imgBTC = imgBTC[jnp.newaxis, ...] # add fake batch in
   # TODO convert this to use conv2D 
   
   ### gated positional embedding w cls token
@@ -77,9 +86,9 @@ def embed_patches(vision_model_params: VisionModel, patches: jax.Array) -> Tenso
 
 
 # page 3 https://arxiv.org/pdf/2010.11929
-def local_encoder(vision_model_params: VisionModel, patches: jax.Array) -> jax.Array:
+def local_encoder(vision_model_params: VisionModel, image: jax.Array) -> jax.Array:
     ## embed patches
-    imgBTC = embed_patches(vision_model_params.transformer, patches)
+    imgBTC = embed_patches(vision_model_params, image)
 
     ## LOCAL TRANSFORMER - scan through layers
     def scan_fn(imgBTC, layer_params):
@@ -134,18 +143,15 @@ def global_encoder(vision_model_params: VisionModel, key_features) -> jax.Array:
 
 # https://j-qi.medium.com/inside-mllama-3-2-understanding-metas-vision-language-model-architecture-ae12ad24dcbf
 # page 56 https://arxiv.org/pdf/2407.21783
-def vision_processing(vision_model_params: VisionModel, image: jax.Array) -> TensorBTC:
-    ## split img into patches
-    patches = image_to_patches(image, (224, 224), (16, 16)) # outputs 14x14 patches
-    
+def vision_processing(vision_model_params: VisionModel, patches: jax.Array) -> TensorBTC:
     ## process through 32 layer local encoder https://arxiv.org/abs/2010.11929
     ## save key intermediate features (layers 3 7 15 23 30
-    key_features = local_encoder(vision_model_params.transformer, patches)
+    key_features = local_encoder(vision_model_params, patches)
     
     ## process these through 8 layer global encoder
     # pre global norm?
     key_features = RMSnorm(key_features, vision_model_params.layernorm_pre_weight, vision_model_params.layernorm_pre_bias)
-    global_features = global_encoder(vision_model_params.global_transformer, key_features)
+    global_features = global_encoder(vision_model_params, key_features)
     global_features = RMSnorm(global_features, vision_model_params.layernorm_post_weight, vision_model_params.layernorm_post_bias)
     # post global layernorm?
 

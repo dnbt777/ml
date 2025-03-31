@@ -12,11 +12,10 @@ from text_forward import self_attention_layer
 from vision_forward import vision_processing
 from vision_forward import cross_attention_layer
 
-# trainable if needed
-# TODO: implement text llama 3.1 first and test it
-# model -> TensorBTC -> TensorBTC -> float -> TensorBTC
+
+
 @functools.partial(jax.jit, static_argnames=["temp"])
-def llama_forward(model_params: LlamaParams, image, context_tokens, temp: float) -> LogProbsBT:
+def llama_forward(model_params: LlamaParams, context_tokens, image, temp: float) -> LogProbsBT:
   ### PADDING MASK
   non_padding_tokens = (context_tokens != 128004)
   padding_mask = ~non_padding_tokens
@@ -25,7 +24,7 @@ def llama_forward(model_params: LlamaParams, image, context_tokens, temp: float)
   xBTC_text = embed_tokens(model_params.language_model, context_tokens)
 
   ### VISION ENCODING
-  xBTC_image = vision_processing(image) 
+  xBTC_image = vision_processing(model_params.vision_model, image) 
     
   ### TRANSFORMER LAYERS
   ## SETUP: TEXT
