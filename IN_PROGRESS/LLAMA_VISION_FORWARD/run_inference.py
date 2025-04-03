@@ -61,8 +61,6 @@ context_window_size = 32 # if this is not done, it will recompile repeatedly for
 # inference loop
 start = time.time()
 image = Image.open(image_path)
-image = jnp.array(image.resize((224, 224)), dtype="bfloat16")
-#image_patches = image_to_patches(image, (224, 224), (16, 16))
 print("IMG SHAPE: ", image.shape)
 for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
   context = prompt + answer

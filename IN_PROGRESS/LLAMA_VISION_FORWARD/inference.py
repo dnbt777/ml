@@ -1,8 +1,8 @@
 import jax
 import jax.numpy as jnp
 import jax.random as jrand
-import functools
 from llama_forward import llama_forward 
+from vision_forward import image_to_tiles
 from llama_types import (
   Text, Tokens, Token, Tokenizer,
   LlamaParams,
@@ -19,9 +19,15 @@ def inference(
     key: jax.Array) -> Token:
   # llama_forward takes batches of inputs
   # purpose: faster fine tuning
+  # set up inputs 
   image_batch = jnp.array(image, dtype="bfloat16")[jnp.newaxis, ...]
+  tile_resolution = (224, 224)
+  patch_count = (16, 16)
+  image_patches = image_to_tiles(image_batch, tile_resolution, patch_count)
   context_tokens_batch = context_tokens[jnp.newaxis, ...]
-  output_logprobs, output_logits = llama_forward(model_params, context_tokens_batch, image_batch, temp)
+  
+  # get output
+  output_logprobs, output_logits = llama_forward(model_params, context_tokens_batch, image_patches, temp)
   
   # sample last logprob (jax.nn.categorical or whatever it was)
   padding_token = 128004

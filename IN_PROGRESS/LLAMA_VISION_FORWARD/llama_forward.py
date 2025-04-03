@@ -15,28 +15,28 @@ from vision_forward import cross_attention_layer
 
 
 @functools.partial(jax.jit, static_argnames=["temp"])
-def llama_forward(model_params: LlamaParams, context_tokens, image, temp: float) -> LogProbsBT:
+def llama_forward(model_params: LlamaParams, context_tokens, image_patches, temp: float) -> LogProbsBT:
   ### PADDING MASK
   non_padding_tokens = (context_tokens != 128004)
   padding_mask = ~non_padding_tokens
   
   ### TEXT EMBEDDINGS
-  xBTC_text = embed_tokens(model_params.language_model, context_tokens)
+  xBTC = embed_tokens(model_params.language_model, context_tokens)
 
   ### VISION ENCODING
-  xBTC_image = vision_processing(model_params.vision_model, image) 
+  xBTC_image = vision_processing(model_params.vision_model, image_patches) 
     
   ### TRANSFORMER LAYERS
   ## SETUP: TEXT
-  def scan_self_attn_layers(xBTC_text, layer_params):
-    xBTC_attn_residual = self_attention_layer(layer_params, xBTC, padding_mask)
-    xBTC = xBTC + xBTC_attn_residual 
+  def scan_self_attn_layers(xBTC_, layer_params):
+    xBTC_attn_residual = self_attention_layer(layer_params, xBTC_, padding_mask)
+    xBTC_ = xBTC_ + xBTC_attn_residual 
     # layer norm
-    xBTC_postattn_residual = RMSnorm(xBTC, layer_params.post_attention_layernorm_weight)
+    xBTC_postattn_residual = RMSnorm(xBTC_, layer_params.post_attention_layernorm_weight)
     # swiglu
     xBTC_postattn_residual = feed_forward(xBTC_postattn_residual, layer_params)
-    xBTC = xBTC + xBTC_postattn_residual
-    return xBTC, None
+    xBTC_ = xBTC_ + xBTC_postattn_residual
+    return xBTC_, None
   cross_attn_layers = [3, 8, 13, 18, 23, 28, 33, 38] # ASSUMPTION double check these layers
   layers_between_cross_attn_layers = [b - a for a, b in zip(cross_attn_layers, cross_attn_layers[:1])]
   ## RUN SCANS (manually pick layers for now ig)
