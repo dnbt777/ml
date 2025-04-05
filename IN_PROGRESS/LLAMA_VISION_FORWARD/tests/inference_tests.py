@@ -1,4 +1,4 @@
-from load_params import load_model_params, load_text_model_params
+from setup_utils import load_model_params, load_text_model_params
 import time
 
 import jax.random as jrand

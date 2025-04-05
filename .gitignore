@@ -25,7 +25,7 @@
 # WIP
 !IN_PROGRESS/3BODY_GRPO/**
 !IN_PROGRESS/LLAMA_VISION_FORWARD/**
-
+!IN_PROGRESS/PIXTRAL/**
 
 # Overwrite allow rules
 **/__pycache__/

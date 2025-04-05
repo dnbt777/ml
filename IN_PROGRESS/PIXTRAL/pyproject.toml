@@ -1,0 +1,12 @@
+[project]
+name = "pixtral"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "jax[cuda12]>=0.5.3",
+    "numpy>=2.2.4",
+    "pillow>=11.1.0",
+    "safetensors>=0.5.3",
+]

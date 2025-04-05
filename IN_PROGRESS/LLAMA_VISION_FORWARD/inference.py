@@ -8,9 +8,7 @@ from llama_types import (
   LlamaParams,
 )
 
-# TODO make sure all ops are bfloat16 or float16
 # TODO for training DEFINITELY make sure all ops are bfloat16
-@jax.jit
 def inference(
     model_params: LlamaParams,
     context_tokens: Tokens,
@@ -20,14 +18,13 @@ def inference(
   # llama_forward takes batches of inputs
   # purpose: faster fine tuning
   # set up inputs 
-  image_batch = jnp.array(image, dtype="bfloat16")[jnp.newaxis, ...]
   tile_resolution = (224, 224)
-  patch_count = (16, 16)
-  image_patches = image_to_tiles(image_batch, tile_resolution, patch_count)
+  image_tiles, aspect_ratio_id = image_to_tiles(image, tile_resolution)
+  image_tiles_batch = image_tiles[jnp.newaxis, ...]
   context_tokens_batch = context_tokens[jnp.newaxis, ...]
   
   # get output
-  output_logprobs, output_logits = llama_forward(model_params, context_tokens_batch, image_patches, temp)
+  output_logprobs, output_logits = llama_forward(model_params, context_tokens_batch, image_tiles_batch, aspect_ratio_id, temp)
   
   # sample last logprob (jax.nn.categorical or whatever it was)
   padding_token = 128004

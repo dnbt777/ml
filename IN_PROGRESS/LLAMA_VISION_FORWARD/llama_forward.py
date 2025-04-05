@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 import functools
 from forward_utils import RMSnorm, feed_forward, embed_tokens
-from load_params import LlamaParams
+from setup_utils import LlamaParams
 from llama_types import (
   LlamaParams,
   LogProbsBT, 
@@ -13,9 +13,8 @@ from vision_forward import vision_processing
 from vision_forward import cross_attention_layer
 
 
-
 @functools.partial(jax.jit, static_argnames=["temp"])
-def llama_forward(model_params: LlamaParams, context_tokens, image_patches, temp: float) -> LogProbsBT:
+def llama_forward(model_params: LlamaParams, context_tokens, image_tiles, aspect_ratio_id, temp: float) -> LogProbsBT:
   ### PADDING MASK
   non_padding_tokens = (context_tokens != 128004)
   padding_mask = ~non_padding_tokens
@@ -24,7 +23,7 @@ def llama_forward(model_params: LlamaParams, context_tokens, image_patches, temp
   xBTC = embed_tokens(model_params.language_model, context_tokens)
 
   ### VISION ENCODING
-  xBTC_image = vision_processing(model_params.vision_model, image_patches) 
+  xBTC_image = vision_processing(model_params.vision_model, image_tiles, aspect_ratio_id) 
     
   ### TRANSFORMER LAYERS
   ## SETUP: TEXT

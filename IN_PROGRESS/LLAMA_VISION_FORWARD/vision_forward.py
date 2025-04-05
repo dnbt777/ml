@@ -10,32 +10,33 @@ from text_forward import GQA_attention # OPTIMIZATION move to separate file
 from llama_types import *
 
 # img -> (h, w) -> (p, p) -> 2D array of patches(patch = 2D array of pixels)
-def image_to_tiles(image: Image, tile_resolution, patches) -> jax.Array:
+def image_to_tiles(image: Image, tile_resolution) -> jax.Array:
     ## PIL resize image to target_resolution
     width, height = image.size
     tile_height, tile_width = tile_resolution
     aspect_ratio = width / height 
-    if aspect_ratio >= 4:
+    buffer = 0.25
+    if aspect_ratio >= 4 - buffer:
        new_width = 4*tile_width 
        new_height = tile_height
        aspect_ratio_id = 7
-    elif aspect_ratio >= 3:
+    elif aspect_ratio >= 3 - buffer:
        new_width = 3*tile_width 
        new_height = tile_height
        aspect_ratio_id = 5
-    elif aspect_ratio >= 2:
+    elif aspect_ratio >= 2 - buffer:
        new_width = 2*tile_width 
        new_height = tile_height
        aspect_ratio_id = 3
-    elif aspect_ratio <= (1 / 2):
+    elif aspect_ratio <= (1 / (2 - buffer)):
        new_width = tile_width 
        new_height = 2*tile_height
        aspect_ratio_id = 2
-    elif aspect_ratio <= (1 / 3):
+    elif aspect_ratio <= (1 / (3 - buffer)):
        new_width = tile_width 
        new_height = 3*tile_height
        aspect_ratio_id = 4
-    elif aspect_ratio <= (1 / 4):
+    elif aspect_ratio <= (1 / (4 - buffer)):
        new_width = tile_width 
        new_height = 4*tile_height
        aspect_ratio_id = 6
@@ -46,40 +47,39 @@ def image_to_tiles(image: Image, tile_resolution, patches) -> jax.Array:
     # 8 would be a 2x2 probably 
     # 0 would be no image
        
-    image = image.resize(new_height, new_width)
+    image = image.resize((new_width, new_height))
     image = jnp.array(image, dtype="bfloat16")
     vtiles, htiles = (new_height // tile_height, new_width // tile_width)  # hardcoded tile size for now
-    ## break into patches using jnp.reshape
-    # input shape: (H, W, 3) = (h*p, w*p, 3) # no batching for now. just vmap this if needed
-    # target shape: (h, w, p, p, 3)
-    tiles = rearrange(image, "(hT h) (wT w) C -> hT wT h w C", hT=vtiles, wT=htiles)
-    patches = rearrange(tiles, "hT wT (h P) (w p) C -> hT wT h w P p C", P=patches[0], p=patches[1])
-    patches = patches[..., :3] # keep only R, G, B, and no A 
-    return patches, aspect_ratio_id
+    tiles = rearrange(image, "(Th h) (Tw w) C -> Th Tw h w C", Th=vtiles, Tw=htiles)
+    tiles = tiles[..., :3] # keep only R, G, B, and no A 
+    return tiles, aspect_ratio_id
 
 
 
 
 
-def embed_patches(vision_model_params: VisionModel, image_patches: jax.Array, aspect_ratio_id: int) -> TensorBTC:
+def embed_tiles(vision_model_params: VisionModel, image_tiles: jax.Array, aspect_ratio_id: int) -> TensorBTC:
   """
     Takes pre-tiled/patched images (B, T, T, P, P, H, W, C) and embeds them
   """
-  B, hT, wT, hP, wP, H, W, RGB_C = image_patches.shape
+  B, Th, Tw, H, W, RGB_C = image_tiles.shape
   ## Tile pixels -> channel
   # shape patches back into tiles and convolve
-  image_tiles = rearrange(image_patches, "B hT wT hP wP H W C -> B (hT wT) C (hP H) (wP W)")
-  print("shapes: ", image_patches.shape, vision_model_params.patch_embedding_weight.shape)
-  # (1, 4, 3, 224, 224) convolve (1280, 3, 14, 14) => (1, 4, 16, 16, 1280)
-  imgBTPPC = jax.lax.conv_general_dilated(
+  image_tiles = rearrange(image_tiles, "B hT wT H W C -> B (hT wT) C H W")
+  image_tiles = rearrange(image_tiles, "B T C H W -> (B T) C H W")
+  print("shapes: ", image_tiles.shape, vision_model_params.patch_embedding_weight.shape)
+  # (B*T, 3, 224, 224) convolve (1280, 3, 14, 14) => (B*T, 16, 16, 1280)
+  patch_resolution = (14, 14)
+  imgBTPC = jax.lax.conv_general_dilated(
       image_tiles,
       vision_model_params.patch_embedding_weight,
-      (14, 14),
+      patch_resolution,
       padding="valid",
-  ) # (B, T, hP, wP, C)
-  imgBTPC = rearrange(imgBTPPC, "B T P p C -> B T (P p) C")
+      dimension_numbers=("NCHW", "OIHW", "NCHW")
+  ) # ((B, T), C, Ph, Pw) == (B*T, 1280, 16, 16)
+
+  imgBTPC = rearrange(imgBTPC, "(B T) C Ph Pw -> B T (Ph Pw) C", B=B)
   B, T, P, C = imgBTPC.shape
-  print(imgBTPC.shape)
 
   ## pre tile positional embeddings
   pre_tile_positional_embedding = vision_model_params.pre_tile_positional_embedding_embedding_weight[aspect_ratio_id] # (5120)
@@ -92,25 +92,26 @@ def embed_patches(vision_model_params: VisionModel, image_patches: jax.Array, as
   # this is a positional embedding for each tile. NOT each patch, but each tile
   imgBTPC = imgBTPC + pre_tile_positional_embedding 
 
+  # add cls token before gated positional embedding
+  cls_token = jnp.zeros(shape=(B, T, 1, C), dtype="bfloat16")
+  imgBTPC = jax.lax.concatenate([cls_token, imgBTPC], dimension=2) # add class token as first 'patch' for each tile
+
   ## gated positional embedding
   # https://github.com/huggingface/transformers/blob/main/src/transformers/models/mllama/modeling_mllama.py#L150
   # Patch wise
   gate = vision_model_params.gated_positional_embedding_gate
   patch_embedding = vision_model_params.gated_positional_embedding_embedding 
-  gated_patch_embedding = (1 - jnp.tanh(gate)) * patch_embedding
-  imgBTPC = imgBTPC + jnp.reshape(gated_patch_embedding, (1, 1, P, C))
+  gated_patch_embedding = (1 - jnp.tanh(gate)) * patch_embedding # (T*P + 1, C) == (4*256 + 1, 1280)
+  gated_patch_embedding = jnp.reshape(gated_patch_embedding, (1, -1, C))
+  gated_patch_embedding = gated_patch_embedding[:, :1 + 256*T, :] # only add embed to  existing patches
+  imgBTPC = imgBTPC + gated_patch_embedding
   # Tile wise
   tile_embedding = vision_model_params.gated_positional_embedding_tile_embedding_weight[aspect_ratio_id] # (5248000)
   max_tiles = 4 # hardcoded for now
-  tile_embedding = jnp.reshape(tile_embedding, (1, max_tiles, P, C))[:, :T, ...]
+  tile_embedding = jnp.reshape(tile_embedding, (1, max_tiles, 1+256*max_tiles, C))[:, :T, ...]
   gated_tile_embedding = gate * tile_embedding
   imgBTPC = imgBTPC + gated_tile_embedding 
 
-
-  # add cls token
-  # imgBPC = rearrange(imgBTPC, "B T P C -> B (T P) C")
-  cls_token = jnp.zeros(shape=(B, T, 1, C), dtype="bfloat16")
-  imgBTPC = jax.lax.concatenate([cls_token, imgBTPC], dimension=2) # add class token as first 'patch' for each tile
   return imgBTPC
 
 
@@ -149,17 +150,17 @@ def unmasked_multihead_attention(attention_layer: AttentionLayer, xBTC: TensorBT
 
 
 # page 3 https://arxiv.org/pdf/2010.11929
-def local_encoder(vision_model_params: VisionModel, image_patches: jax.Array) -> jax.Array:
+def local_encoder(vision_model_params: VisionModel, image_tiles: jax.Array, aspect_ratio_id: int) -> jax.Array:
     ## embed patches
-    imgBTPC = embed_patches(vision_model_params, image_patches)
-    imgBTC = rearrange(imgBTPC, "B T P C -> B (T P) C")
+    imgBTPC = embed_tiles(vision_model_params, image_tiles, aspect_ratio_id)
+    imgBTC = rearrange(imgBTPC, "B T P C -> (B T) P C")
 
     ## LOCAL TRANSFORMER - scan through layers
     def scan_fn(imgBTC, layer_params):
         ### ATTENTION_RESIDUAL
         ## norm -> attn -> reconnect
         attn_residual = RMSnorm(imgBTC, layer_params.input_layernorm_weight, layer_params.input_layernorm_bias) # ASSUMPTION: this is RMSnorm
-        attn_residual = unmasked_multihead_attention(vision_model_params.transformer, attn_residual) # unmasked
+        attn_residual = unmasked_multihead_attention(layer_params, attn_residual) # unmasked
         imgBTC = imgBTC + attn_residual
         ### POST ATTN RESIDUAL
         ## norm -> MLP -> reconnect
@@ -175,7 +176,7 @@ def local_encoder(vision_model_params: VisionModel, image_patches: jax.Array) ->
     layers = jnp.array([3, 7, 15, 23, 30]) # mlamma uses 0 indexing, so no + 1 
     selected_layer_activations = layer_activations[layers, ...] # (L, BT, P, C)
 
-    selected_layer_activations = rearrange(selected_layer_activations, "L B (T P) C -> B L T P C")
+    selected_layer_activations = rearrange(selected_layer_activations, "L (B T) P C -> B L T P C")
     return selected_layer_activations
 
 
@@ -205,7 +206,7 @@ def global_encoder(vision_model_params: VisionModel, key_features) -> jax.Array:
 def vision_processing(vision_model_params: VisionModel, patches: jax.Array, aspect_ratio_id: int) -> TensorBTC:
     ## process through 32 layer local encoder https://arxiv.org/abs/2010.11929
     ## save key intermediate features (layers 3 7 15 23 30
-    key_features = local_encoder(vision_model_params, patches) # (B L T P C)
+    key_features = local_encoder(vision_model_params, patches, aspect_ratio_id) # (B L T P C)
     B, L, T, P, C = key_features.shape
     
     ## process these through 8 layer global encoder
@@ -222,8 +223,8 @@ def vision_processing(vision_model_params: VisionModel, patches: jax.Array, aspe
     global_features = global_features + post_tile_embedding*gate
 
     ## concatenate layers of features into 7680 dimensional representation
-    global_features = rearrange()
-    imgBLTPC = jax.lax.concatenate([key_features, jnp.reshape(global_features, (B, 1, T, P, C))], dimension=1) # (B, Layer, T, P, C)
+    global_features = jnp.reshape(global_features, (B, 1, T, P, C)) # single layer. append to the key features layers.
+    imgBLTPC = jax.lax.concatenate([key_features, global_features], dimension=1) # (B, Layer, T, P, C)
     imgBTC = rearrange(imgBLTPC, "B L T P C -> B (T P) (L C)")
 
     ## project image features into the model's semantic space (7198 -> 4096, or whatever)

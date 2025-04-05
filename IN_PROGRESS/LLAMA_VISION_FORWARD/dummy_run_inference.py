@@ -2,7 +2,7 @@
             #@ Load model $#
             #$$%^@%*!@^@^#&#
 # --------------------------------------- #
-from setup_utils import load_model_params
+from setup_utils import load_dummy_params
 import time
 
 path = "./Llama"
@@ -13,7 +13,7 @@ paths = [
 # llama_params = load_as_jnp_dict(paths)
 print("Initializing...")
 start = time.time()
-llama_params = load_model_params(paths)
+llama_params = load_dummy_params(paths)
 print(f"Initialized in {time.time() - start:0.2f}s.")
 # --------------------------------------- #
 
@@ -51,7 +51,7 @@ image_path = "./image.png"
 temp = 0.001 
 print(f"Prompt: \"{prompt}\"")
 
-DEBUG = True 
+DEBUG = False 
 if DEBUG:
   jax.config.update("jax_disable_jit", True)
 

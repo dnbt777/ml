@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from forward_utils import RMSnorm, feed_forward, rope, embed_tokens
-from load_params import LlamaParams
+from setup_utils import LlamaParams
 from llama_types import (
   LlamaParams, LangModelSelfAttentionLayer, 
   Tokens, TensorBTC, LogProbsBT, 

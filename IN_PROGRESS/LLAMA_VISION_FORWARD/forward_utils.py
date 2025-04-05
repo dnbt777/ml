@@ -42,7 +42,7 @@ def embed_tokens(lang_model_params: LangModel, batch_tokens: TensorBT) -> Tensor
   #one_hot_tokens = jax.nn.one_hot(batch_tokens, vocab_size, axis=-1)
   #token_embeddings = one_hot_tokens @ lang_model_params.lm_head_weight
   token_embeddings = jnp.take(lang_model_params.model.embed_tokens, batch_tokens, axis=0)
-  token_embeddings = lang_model_params.model.embed_tokens[batch_tokens]
+  #token_embeddings = lang_model_params.model.embed_tokens[batch_tokens]
   return token_embeddings
 
 

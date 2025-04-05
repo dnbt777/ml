@@ -1,20 +1,18 @@
-from vision_forward import image_to_patches
+from vision_forward import image_to_tiles 
 from PIL import Image
-import jax
-import jax.numpy as jnp
 import numpy as np
+from einops import rearrange
 
-imgpath = "./image.png"
+imgpath = "./image-1.png"
 img = Image.open(imgpath)
-patches = image_to_patches(img, (224, 224), (32, 32))
+tiles, aspect_ratio_id = image_to_tiles(img, (224, 224), (16, 16))
+tiles = rearrange(tiles, "B T PH PW H W C -> (B T) (PH H) (PW W) C")
 
-print(patches.shape)
 
-img.resize((224, 224)).show()
 import time
-for i in range(patches.shape[0]):
-  for j in range(patches.shape[1]):
-    tempimg = Image.fromarray(np.array(patches[j, i]))
-    print(i, j, tempimg.size)
-    tempimg.show()
-    time.sleep(3)
+for T in range(tiles.shape[0]):
+  temparray = np.array(tiles[T]).astype(np.uint8)
+  print(T, temparray.size, aspect_ratio_id)
+  tempimg = Image.fromarray(temparray)
+  tempimg.show()
+  time.sleep(3)

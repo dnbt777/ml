@@ -1,0 +1,24 @@
+{
+  "dim": 5120,
+  "n_layers": 40,
+  "head_dim": 128,
+  "hidden_dim": 14336,
+  "n_heads": 32,
+  "n_kv_heads": 8,
+  "rope_theta": 1000000000.0,
+  "norm_eps": 1e-05,
+  "vocab_size": 131072,
+  "vision_encoder": {
+    "hidden_size": 1024,
+    "num_channels": 3,
+    "image_size": 1024,
+    "patch_size": 16,
+    "rope_theta": 10000.0,
+    "intermediate_size": 4096,
+    "num_hidden_layers": 24,
+    "num_attention_heads": 16,
+    "image_token_id": 10,
+    "image_break_token_id": 12,
+    "image_end_token_id": 13
+  }
+}
