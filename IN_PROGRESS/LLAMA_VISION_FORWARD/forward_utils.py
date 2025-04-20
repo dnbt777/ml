@@ -1,7 +1,9 @@
 import jax.numpy as jnp
 import jax
+from typing import Union
 from llama_types import (
-  LangModelSelfAttentionLayer, LangModel,
+  LangModelSelfAttentionLayer, LangModel, VisionModelLocalLayer,
+  VisionModelGlobalLayer,
   TensorBT, TensorBTC,
   AttentionLayer,
 )
@@ -16,11 +18,29 @@ def layer_norm(x, weight):
 
 
 
-def RMSnorm(x: TensorBTC, weight: jax.Array) -> TensorBTC:
+def RMSnorm(x: TensorBTC, weight: jax.Array, bias: jax.Array) -> TensorBTC:
   rms = jnp.sqrt(jnp.mean(x * x, axis=-1, keepdims=True, dtype="bfloat16"))
-  return weight*(x / (rms + 1e-5))
+  return bias + weight*(x / (rms + 1e-5))
 
 
+def vision_model_global_feed_forward(
+        x: TensorBTC,
+        layer_params: VisionModelGlobalLayer, 
+        ) -> TensorBTC:
+    gate = layer_params.gate_ffn
+    up = x @ jnp.transpose(layer_params.mlp_fc1_weight) + layer_params.mlp_fc1_bias
+    out = up * jax.nn.silu(gate)
+    out = out @ jnp.transpose(layer_params.mlp_fc2_weight) + layer_params.mlp_fc2_bias
+    return out
+
+
+def vision_model_local_feed_forward(
+        x: TensorBTC,
+        layer_params: VisionModelLocalLayer,
+        ) -> TensorBTC:
+    x = x @ jnp.transpose(layer_params.mlp_fc1_weight) + layer_params.mlp_fc1_bias
+    x = x @ jnp.transpose(layer_params.mlp_fc2_weight) + layer_params.mlp_fc2_bias
+    return x
 
 
 def feed_forward(

@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from PIL import Image
-from forward_utils import RMSnorm, feed_forward, rope, rope_channel 
+from forward_utils import RMSnorm, feed_forward, rope, rope_channel, vision_model_local_feed_forward, vision_model_global_feed_forward
 from llama_types import (
   Text, Tokens, TensorBTC
 )
@@ -103,13 +103,14 @@ def embed_tiles(vision_model_params: VisionModel, image_tiles: jax.Array, aspect
   patch_embedding = vision_model_params.gated_positional_embedding_embedding 
   gated_patch_embedding = (1 - jnp.tanh(gate)) * patch_embedding # (T*P + 1, C) == (4*256 + 1, 1280)
   gated_patch_embedding = jnp.reshape(gated_patch_embedding, (1, -1, C))
-  gated_patch_embedding = gated_patch_embedding[:, :1 + 256*T, :] # only add embed to  existing patches
+  gated_patch_embedding = gated_patch_embedding[:, :1 + P*T, :] # only add embed to  existing patches
   imgBTPC = imgBTPC + gated_patch_embedding
   # Tile wise
   tile_embedding = vision_model_params.gated_positional_embedding_tile_embedding_weight[aspect_ratio_id] # (5248000)
-  max_tiles = 4 # hardcoded for now
-  tile_embedding = jnp.reshape(tile_embedding, (1, max_tiles, 1+256*max_tiles, C))[:, :T, ...]
   gated_tile_embedding = gate * tile_embedding
+  max_tiles = 4 # hardcode for now
+  gated_tile_embedding = jnp.reshape(gated_tile_embedding, (1, max_tiles, 1+P, C))
+  gated_tile_embedding = gated_tile_embedding[:, :T, ...] # only take the tiles needed
   imgBTPC = imgBTPC + gated_tile_embedding 
 
   return imgBTPC
@@ -136,7 +137,7 @@ def unmasked_multihead_attention(attention_layer: AttentionLayer, xBTC: TensorBT
     V = rearrange(V, "B T (H v) -> B H T v", H=attention_heads)
 
     d = xBTC.shape[-1]/attention_heads # channel size per attention head
-    attention_scores = jnp.dot(Q, Kt)/jnp.sqrt(d) # B H T T
+    attention_scores = jnp.einsum("BHTc,BHct->BHTt", Q, Kt)/jnp.sqrt(d) # B H T T
     attention_table = jnp.einsum("BHTt,BHTv->BHtv", attention_scores, V)
     Z = attention_table
     
@@ -148,12 +149,12 @@ def unmasked_multihead_attention(attention_layer: AttentionLayer, xBTC: TensorBT
 
 
 
-
 # page 3 https://arxiv.org/pdf/2010.11929
 def local_encoder(vision_model_params: VisionModel, image_tiles: jax.Array, aspect_ratio_id: int) -> jax.Array:
     ## embed patches
     imgBTPC = embed_tiles(vision_model_params, image_tiles, aspect_ratio_id)
-    imgBTC = rearrange(imgBTPC, "B T P C -> (B T) P C")
+    B, T, P, C = imgBTPC.shape
+    imgBTC = rearrange(imgBTPC, "B T P C -> (B T) P C") # ASSUMPTION: inter-tile attention
 
     ## LOCAL TRANSFORMER - scan through layers
     def scan_fn(imgBTC, layer_params):
@@ -164,20 +165,20 @@ def local_encoder(vision_model_params: VisionModel, image_tiles: jax.Array, aspe
         imgBTC = imgBTC + attn_residual
         ### POST ATTN RESIDUAL
         ## norm -> MLP -> reconnect
-        post_attn_residual = RMSnorm(imgBTC, layer_params.post_attn_layernorm_weight, layer_params.post_attn_layernorm_bias)
-        post_attn_residual = feed_forward(post_attn_residual, layer_params)
+        post_attn_residual = RMSnorm(imgBTC, layer_params.post_attention_layernorm_weight, layer_params.post_attention_layernorm_bias)
+        post_attn_residual = vision_model_local_feed_forward(post_attn_residual, layer_params)
         imgBTC = imgBTC + post_attn_residual
         ### send imgBTC to next block and output the layer activation
         layer_activation = imgBTC
         return imgBTC, layer_activation # carry_over, output
-    _, layer_activations = jax.lax.scan(scan_fn, imgBTC, vision_model_params.transformer.layers)
+    imgBTC, layer_activations = jax.lax.scan(scan_fn, imgBTC, vision_model_params.transformer.layers)
     
     ## return layers 3, 7, 15, 23, 30
     layers = jnp.array([3, 7, 15, 23, 30]) # mlamma uses 0 indexing, so no + 1 
     selected_layer_activations = layer_activations[layers, ...] # (L, BT, P, C)
 
-    selected_layer_activations = rearrange(selected_layer_activations, "L (B T) P C -> B L T P C")
-    return selected_layer_activations
+    selected_layer_activations = rearrange(selected_layer_activations, "L (B T) P C -> B L T P C", B=B, T=T)
+    return imgBTC, selected_layer_activations
 
 
 
@@ -187,12 +188,12 @@ def global_encoder(vision_model_params: VisionModel, key_features) -> jax.Array:
       ### ATTENTION_RESIDUAL
       ## norm -> attn -> reconnect
       attn_residual = RMSnorm(xBTC, layer_params.input_layernorm_weight, layer_params.input_layernorm_bias) # ASSUMPTION: this is RMSnorm
-      attn_residual = unmasked_multihead_attention(vision_model_params.global_transformer, attn_residual) # unmasked
+      attn_residual = unmasked_multihead_attention(layer_params, attn_residual) # unmasked
       xBTC = xBTC + attn_residual
       ### POST ATTN RESIDUAL
       ## norm -> MLP -> reconnect
-      post_attn_residual = RMSnorm(xBTC, layer_params.post_attn_layernorm_weight, layer_params.post_attn_layernorm_bias)
-      post_attn_residual = feed_forward(post_attn_residual, layer_params) # replace with fully connected, i think
+      post_attn_residual = RMSnorm(xBTC, layer_params.post_attention_layernorm_weight, layer_params.post_attention_layernorm_bias)
+      post_attn_residual = vision_model_global_feed_forward(post_attn_residual, layer_params) # replace with fully connected, i think
       xBTC = xBTC + post_attn_residual
       return xBTC, None 
   global_features, _ = jax.lax.scan(scan_fn, key_features, vision_model_params.global_transformer.layers)
@@ -206,32 +207,39 @@ def global_encoder(vision_model_params: VisionModel, key_features) -> jax.Array:
 def vision_processing(vision_model_params: VisionModel, patches: jax.Array, aspect_ratio_id: int) -> TensorBTC:
     ## process through 32 layer local encoder https://arxiv.org/abs/2010.11929
     ## save key intermediate features (layers 3 7 15 23 30
-    key_features = local_encoder(vision_model_params, patches, aspect_ratio_id) # (B L T P C)
-    B, L, T, P, C = key_features.shape
+    imgBPC, intermediate_features = local_encoder(vision_model_params, patches, aspect_ratio_id) # (B L T P C)
+    B, L, T, P, C = intermediate_features.shape
     
     ## process these through 8 layer global encoder
-    key_features = RMSnorm(key_features, vision_model_params.layernorm_pre_weight, vision_model_params.layernorm_pre_bias)
-    key_features = rearrange(key_features, "B L T P C -> B (L T P) C")
-    global_features = global_encoder(vision_model_params, key_features) # B TP C
+    imgBPC = RMSnorm(imgBPC, vision_model_params.layernorm_pre_weight, vision_model_params.layernorm_pre_bias)
+    
+    ## Post tile embeddings
+    post_tile_embedding_weight = vision_model_params.post_tile_positional_embedding_embedding_weight[aspect_ratio_id]
+    gate = vision_model_params.post_tile_positional_embedding_gate
+    post_tile_embedding = post_tile_embedding_weight*gate
+    post_tile_embedding = jnp.reshape(post_tile_embedding, (1, 4, 1, C)) # 4 = MAX_TILES
+    #imgBPC = jnp.reshape(imgBPC, (B, T, P, C))
+    # add padding to imgBPC to make it divisible by 4. then split into 4 tiles. then treat every
+    # padding_patch_count = (8 - (imgBPC.shape[-2] % 8)) % 8
+    imgBTPC = rearrange(imgBPC, "B (T P) C -> B T P C", T=T)
+    imgBTPC = imgBTPC + post_tile_embedding # B T P C + 1 MAX_T 1 C => B T P C
+    
+
+    imgBPC = rearrange(imgBTPC, "B T P C -> B (T P) C")
+    global_features = global_encoder(vision_model_params, imgBPC) # B TP C
     global_features = RMSnorm(global_features, vision_model_params.layernorm_post_weight, vision_model_params.layernorm_post_bias)
 
-    ## Post tile embeddings
-    global_features = rearrange(global_features, "B (T P) C -> B T P C")
-    post_tile_embedding = vision_model_params.post_tile_positional_embedding_embedding_weight[aspect_ratio_id]
-    post_tile_embedding = jnp.reshape(post_tile_embedding, (1, 4, 1, C))[:, :T, ...] # (5120,) => (1, 4, 1, 1280)
-    gate = vision_model_params.post_tile_positional_embedding_gate
-    global_features = global_features + post_tile_embedding*gate
 
     ## concatenate layers of features into 7680 dimensional representation
-    global_features = jnp.reshape(global_features, (B, 1, T, P, C)) # single layer. append to the key features layers.
-    imgBLTPC = jax.lax.concatenate([key_features, global_features], dimension=1) # (B, Layer, T, P, C)
-    imgBTC = rearrange(imgBLTPC, "B L T P C -> B (T P) (L C)")
+    global_features = jnp.reshape(global_features, (B, 1, P, C)) # single layer. append to the key features layers.
+    imgBLTPC = jax.lax.concatenate([intermediate_features, global_features], dimension=1) # (B, Layer, T, P, C)
+    imgBPC = rearrange(imgBLTPC, "B L T P C -> B (T P) (L C)")
 
     ## project image features into the model's semantic space (7198 -> 4096, or whatever)
-    imgBTC = imgBTC @ vision_model_params.multi_modal_projector.weight
-    imgBTC = imgBTC + vision_model_params.multi_modal_projector.bias
+    imgBPC = imgBPC @ vision_model_params.multi_modal_projector.weight
+    imgBPC = imgBPC + vision_model_params.multi_modal_projector.bias
 
-    return imgBTC # same shape as text tokens now
+    return imgBPC # same shape as text tokens now
 
 
 

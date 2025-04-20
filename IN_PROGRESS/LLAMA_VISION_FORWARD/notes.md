@@ -71,3 +71,5 @@ https://github.com/naklecha/llama3-from-scratch
 
 
 
+### Small details:
+- Each TILE gets its own CLS token

@@ -18,7 +18,7 @@ def inference(
   # llama_forward takes batches of inputs
   # purpose: faster fine tuning
   # set up inputs 
-  tile_resolution = (224, 224)
+  tile_resolution = (448, 448)
   image_tiles, aspect_ratio_id = image_to_tiles(image, tile_resolution)
   image_tiles_batch = image_tiles[jnp.newaxis, ...]
   context_tokens_batch = context_tokens[jnp.newaxis, ...]
