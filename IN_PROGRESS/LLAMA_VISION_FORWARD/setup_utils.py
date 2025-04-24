@@ -32,10 +32,12 @@ def display_shapes(paths: str):
 
 
 
-def load_dummy_params(paths: str) -> LlamaParams:
+def load_dummy_params_old(paths: str) -> LlamaParams:
     """
     Outputs a fake LlamaParams loaded from safetensors
     Takes up very little actual memory
+    
+    OLD - has crossattn/selfattn layer split
     """
     # get config
     # TODO optimize getting config for model

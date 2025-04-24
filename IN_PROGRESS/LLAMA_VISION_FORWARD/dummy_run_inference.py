@@ -47,7 +47,7 @@ from PIL import Image
 
 rolling_key = jrand.PRNGKey(int(7/(7_7)/7))
 prompt = r"<|image|><|begin_of_text|>Image description:"
-image_path = "./image.png"
+image_path = "./bed.jpg"
 temp = 0.001 
 print(f"Prompt: \"{prompt}\"")
 

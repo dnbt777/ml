@@ -17,33 +17,39 @@ def image_to_tiles(image: Image, tile_resolution) -> jax.Array:
     aspect_ratio = width / height 
     buffer = 0.25
     if aspect_ratio >= 4 - buffer:
-       new_width = 4*tile_width 
-       new_height = tile_height
-       aspect_ratio_id = 7
+      new_width = 4*tile_width 
+      new_height = tile_height
+      aspect_ratio_id = 7
     elif aspect_ratio >= 3 - buffer:
-       new_width = 3*tile_width 
-       new_height = tile_height
-       aspect_ratio_id = 5
+      new_width = 3*tile_width 
+      new_height = tile_height
+      aspect_ratio_id = 5
     elif aspect_ratio >= 2 - buffer:
-       new_width = 2*tile_width 
-       new_height = tile_height
-       aspect_ratio_id = 3
+      new_width = 2*tile_width 
+      new_height = tile_height
+      aspect_ratio_id = 3
     elif aspect_ratio <= (1 / (2 - buffer)):
-       new_width = tile_width 
-       new_height = 2*tile_height
-       aspect_ratio_id = 2
+      new_width = tile_width 
+      new_height = 2*tile_height
+      aspect_ratio_id = 2
     elif aspect_ratio <= (1 / (3 - buffer)):
-       new_width = tile_width 
-       new_height = 3*tile_height
-       aspect_ratio_id = 4
+      new_width = tile_width 
+      new_height = 3*tile_height
+      aspect_ratio_id = 4
     elif aspect_ratio <= (1 / (4 - buffer)):
-       new_width = tile_width 
-       new_height = 4*tile_height
-       aspect_ratio_id = 6
+      new_width = tile_width 
+      new_height = 4*tile_height
+      aspect_ratio_id = 6
     else:
-       new_width = tile_width 
-       new_height = tile_height
-       aspect_ratio_id = 1
+      # HD
+      if width / tile_width >= 2 - 0.25:
+          new_width = 2*tile_width
+          new_height = 2*tile_height
+          aspect_ratio_id = 8
+      else: # Not HD 
+        new_width = tile_width 
+        new_height = tile_height
+        aspect_ratio_id = 1
     # 8 would be a 2x2 probably 
     # 0 would be no image
        
@@ -173,11 +179,13 @@ def local_encoder(vision_model_params: VisionModel, image_tiles: jax.Array, aspe
         return imgBTC, layer_activation # carry_over, output
     imgBTC, layer_activations = jax.lax.scan(scan_fn, imgBTC, vision_model_params.transformer.layers)
     
+    imgBTC = rearrange(imgBTC, "(B T) P C -> B (T P) C", B=B, T=T, P=P)
+    
     ## return layers 3, 7, 15, 23, 30
     layers = jnp.array([3, 7, 15, 23, 30]) # mlamma uses 0 indexing, so no + 1 
     selected_layer_activations = layer_activations[layers, ...] # (L, BT, P, C)
 
-    selected_layer_activations = rearrange(selected_layer_activations, "L (B T) P C -> B L T P C", B=B, T=T)
+    selected_layer_activations = rearrange(selected_layer_activations, "L (B T) P C -> B L T P C", B=B, T=T, P=P)
     return imgBTC, selected_layer_activations
 
 
@@ -205,41 +213,36 @@ def global_encoder(vision_model_params: VisionModel, key_features) -> jax.Array:
 # https://j-qi.medium.com/inside-mllama-3-2-understanding-metas-vision-language-model-architecture-ae12ad24dcbf
 # page 56 https://arxiv.org/pdf/2407.21783
 def vision_processing(vision_model_params: VisionModel, patches: jax.Array, aspect_ratio_id: int) -> TensorBTC:
-    ## process through 32 layer local encoder https://arxiv.org/abs/2010.11929
-    ## save key intermediate features (layers 3 7 15 23 30
-    imgBPC, intermediate_features = local_encoder(vision_model_params, patches, aspect_ratio_id) # (B L T P C)
-    B, L, T, P, C = intermediate_features.shape
-    
-    ## process these through 8 layer global encoder
-    imgBPC = RMSnorm(imgBPC, vision_model_params.layernorm_pre_weight, vision_model_params.layernorm_pre_bias)
-    
-    ## Post tile embeddings
-    post_tile_embedding_weight = vision_model_params.post_tile_positional_embedding_embedding_weight[aspect_ratio_id]
-    gate = vision_model_params.post_tile_positional_embedding_gate
-    post_tile_embedding = post_tile_embedding_weight*gate
-    post_tile_embedding = jnp.reshape(post_tile_embedding, (1, 4, 1, C)) # 4 = MAX_TILES
-    #imgBPC = jnp.reshape(imgBPC, (B, T, P, C))
-    # add padding to imgBPC to make it divisible by 4. then split into 4 tiles. then treat every
-    # padding_patch_count = (8 - (imgBPC.shape[-2] % 8)) % 8
-    imgBTPC = rearrange(imgBPC, "B (T P) C -> B T P C", T=T)
-    imgBTPC = imgBTPC + post_tile_embedding # B T P C + 1 MAX_T 1 C => B T P C
-    
+  ## process through 32 layer local encoder https://arxiv.org/abs/2010.11929
+  ## save key intermediate features (layers 3 7 15 23 30
+  imgBPC, intermediate_features = local_encoder(vision_model_params, patches, aspect_ratio_id) # (B L T P C)
+  B, L, T, P, C = intermediate_features.shape
+  
+  ## process these through 8 layer global encoder
+  imgBPC = RMSnorm(imgBPC, vision_model_params.layernorm_pre_weight, vision_model_params.layernorm_pre_bias)
+  
+  ## Post tile embeddings
+  post_tile_embedding_weight = vision_model_params.post_tile_positional_embedding_embedding_weight[aspect_ratio_id]
+  gate = vision_model_params.post_tile_positional_embedding_gate
+  post_tile_embedding = post_tile_embedding_weight*gate
+  post_tile_embedding = jnp.reshape(post_tile_embedding, (1, 4, 1, C)) # 4 = MAX_TILES
+  #imgBPC = jnp.reshape(imgBPC, (B, T, P, C))
+  # add padding to imgBPC to make it divisible by 4. then split into 4 tiles. then treat every
+  # padding_patch_count = (8 - (imgBPC.shape[-2] % 8)) % 8
+  imgBTPC = rearrange(imgBPC, "B (T P) C -> B T P C", T=T)
+  imgBTPC = imgBTPC + post_tile_embedding # B T P C + 1 MAX_T 1 C => B T P C
 
-    imgBPC = rearrange(imgBTPC, "B T P C -> B (T P) C")
-    global_features = global_encoder(vision_model_params, imgBPC) # B TP C
-    global_features = RMSnorm(global_features, vision_model_params.layernorm_post_weight, vision_model_params.layernorm_post_bias)
+  imgBPC = rearrange(imgBTPC, "B T P C -> B (T P) C")
+  global_features = global_encoder(vision_model_params, imgBPC) # B TP C
+  global_features = RMSnorm(global_features, vision_model_params.layernorm_post_weight, vision_model_params.layernorm_post_bias)
 
+  ## concatenate layers into 7680 channel size
+  global_features = jnp.reshape(global_features, (B, 1, T*P, C)) # single layer. append to the key features layers.
+  intermediate_features = rearrange(intermediate_features, "B L T P C -> B L (T P) C", T=T, P=P)
+  imgBLPC = jax.lax.concatenate([intermediate_features, global_features], dimension=1) # (B, Layer, TP, C)
+  imgBPC = rearrange(imgBLPC, "B L (T P) C -> B (T P) (L C)", L=L+1, T=T, P=P) # L += 1 from concatenation
 
-    ## concatenate layers of features into 7680 dimensional representation
-    global_features = jnp.reshape(global_features, (B, 1, P, C)) # single layer. append to the key features layers.
-    imgBLTPC = jax.lax.concatenate([intermediate_features, global_features], dimension=1) # (B, Layer, T, P, C)
-    imgBPC = rearrange(imgBLTPC, "B L T P C -> B (T P) (L C)")
-
-    ## project image features into the model's semantic space (7198 -> 4096, or whatever)
-    imgBPC = imgBPC @ vision_model_params.multi_modal_projector.weight
-    imgBPC = imgBPC + vision_model_params.multi_modal_projector.bias
-
-    return imgBPC # same shape as text tokens now
+  return imgBPC 
 
 
 
