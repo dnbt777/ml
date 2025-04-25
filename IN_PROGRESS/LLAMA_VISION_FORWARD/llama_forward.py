@@ -43,18 +43,25 @@ def llama_forward(model_params: LlamaParams, context_tokens, image_tiles, aspect
     return xBTC_, None
   layer_count = 39
   cross_attn_layers = [3, 8, 13, 18, 23, 28, 33, 38] # ASSUMPTION double check these layers
-  self_attn_layers = [layer for layer in range(1, layer_count+1) if layer not in cross_attn_layers] 
-  layers_between_cross_attn_layers = [b - a for a, b in zip(cross_attn_layers, cross_attn_layers[1:])]
+  layers = list(range(1, 39+1))
   ## RUN SCANS (manually pick layers for now ig)
-  self_attn_layer = 0
-  for cross_attn_layer_index, cross_attn_layer_gap in enumerate(layers_between_cross_attn_layers):
-    next_self_attn_layer = self_attn_layer + cross_attn_layer_gap
-    cross_attn_layer = cross_attn_layers[cross_attn_layer_index]
-    tree_mapped_layer_slice = jax.tree_util.tree_map(lambda attr: attr[self_attn_layer:next_self_attn_layer], model_params.language_model.model.self_attention_layers)
-    xBTC, _ = jax.lax.scan(scan_self_attn_layers, xBTC, tree_mapped_layer_slice)
-    xBTC = cross_attention_layer(model_params.language_model.model.cross_attention_layers[cross_attn_layer], xBTC, xBTC_image, padding_mask)
-    self_attn_layer = next_self_attn_layer
-  
+  last_cross_attn_layer = 0
+  for idx, cross_attn_layer in enumerate(cross_attn_layers):
+    self_attn_layers_params = jax.tree_util.tree_map(lambda attr: attr[last_cross_attn_layer:cross_attn_layer-1], model_params.language_model.model.self_attention_layers)
+    xBTC, _ = jax.lax.scan(scan_self_attn_layers, xBTC, self_attn_layers_params)
+    cross_attn_layer_params = jax.tree_util.tree_map(lambda attr: attr[idx], model_params.language_model.model.cross_attention_layers)
+    xBTC = cross_attention_layer(cross_attn_layer_params, xBTC, xBTC_image, padding_mask)
+    last_cross_attn_layer = cross_attn_layer
+  ## do final 39th layer
+  self_attn_layer_params = jax.tree_util.tree_map(lambda attr: attr[last_cross_attn_layer+1], model_params.language_model.model.self_attention_layers)
+  xBTC_attn_residual = self_attention_layer(self_attn_layer_params, xBTC, padding_mask)
+  xBTC = xBTC + xBTC_attn_residual 
+  # layer norm
+  xBTC_postattn_residual = RMSnorm(xBTC, self_attn_layer_params.post_attention_layernorm_weight)
+  # swiglu
+  xBTC_postattn_residual = feed_forward(xBTC_postattn_residual, self_attn_layer_params)
+  xBTC = xBTC + xBTC_postattn_residual
+
   ## OUTPUT
   #layernorm and project to logits
   xBTC = RMSnorm(xBTC, model_params.language_model.model.norm_weight)

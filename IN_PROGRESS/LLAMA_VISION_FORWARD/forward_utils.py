@@ -18,10 +18,14 @@ def layer_norm(x, weight):
 
 
 
-def RMSnorm(x: TensorBTC, weight: jax.Array, bias: jax.Array) -> TensorBTC:
+def RMSnorm_bias(x: TensorBTC, weight: jax.Array, bias: jax.Array) -> TensorBTC:
   rms = jnp.sqrt(jnp.mean(x * x, axis=-1, keepdims=True, dtype="bfloat16"))
   return bias + weight*(x / (rms + 1e-5))
 
+
+def RMSnorm(x: TensorBTC, weight: jax.Array) -> TensorBTC:
+  rms = jnp.sqrt(jnp.mean(x * x, axis=-1, keepdims=True, dtype="bfloat16"))
+  return weight*(x / (rms + 1e-5))
 
 def vision_model_global_feed_forward(
         x: TensorBTC,

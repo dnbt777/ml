@@ -1,7 +1,7 @@
 import jax
 import jax.numpy as jnp
 from einops import rearrange
-from forward_utils import RMSnorm, feed_forward, rope, embed_tokens
+from forward_utils import RMSnorm, RMSnorm_bias, feed_forward, rope, embed_tokens
 from setup_utils import LlamaParams
 from llama_types import (
   LlamaParams, LangModelSelfAttentionLayer, 

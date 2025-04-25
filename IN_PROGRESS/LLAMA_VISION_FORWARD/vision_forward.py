@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 from einops import rearrange
 from PIL import Image
-from forward_utils import RMSnorm, feed_forward, rope, rope_channel, vision_model_local_feed_forward, vision_model_global_feed_forward
+from forward_utils import RMSnorm, RMSnorm_bias, feed_forward, rope, rope_channel, vision_model_local_feed_forward, vision_model_global_feed_forward
 from llama_types import (
   Text, Tokens, TensorBTC
 )
@@ -166,12 +166,12 @@ def local_encoder(vision_model_params: VisionModel, image_tiles: jax.Array, aspe
     def scan_fn(imgBTC, layer_params):
         ### ATTENTION_RESIDUAL
         ## norm -> attn -> reconnect
-        attn_residual = RMSnorm(imgBTC, layer_params.input_layernorm_weight, layer_params.input_layernorm_bias) # ASSUMPTION: this is RMSnorm
+        attn_residual = RMSnorm_bias(imgBTC, layer_params.input_layernorm_weight, layer_params.input_layernorm_bias) # ASSUMPTION: this is RMSnorm
         attn_residual = unmasked_multihead_attention(layer_params, attn_residual) # unmasked
         imgBTC = imgBTC + attn_residual
         ### POST ATTN RESIDUAL
         ## norm -> MLP -> reconnect
-        post_attn_residual = RMSnorm(imgBTC, layer_params.post_attention_layernorm_weight, layer_params.post_attention_layernorm_bias)
+        post_attn_residual = RMSnorm_bias(imgBTC, layer_params.post_attention_layernorm_weight, layer_params.post_attention_layernorm_bias)
         post_attn_residual = vision_model_local_feed_forward(post_attn_residual, layer_params)
         imgBTC = imgBTC + post_attn_residual
         ### send imgBTC to next block and output the layer activation
@@ -195,12 +195,12 @@ def global_encoder(vision_model_params: VisionModel, key_features) -> jax.Array:
   def scan_fn(xBTC, layer_params):
       ### ATTENTION_RESIDUAL
       ## norm -> attn -> reconnect
-      attn_residual = RMSnorm(xBTC, layer_params.input_layernorm_weight, layer_params.input_layernorm_bias) # ASSUMPTION: this is RMSnorm
+      attn_residual = RMSnorm_bias(xBTC, layer_params.input_layernorm_weight, layer_params.input_layernorm_bias) # ASSUMPTION: this is RMSnorm
       attn_residual = unmasked_multihead_attention(layer_params, attn_residual) # unmasked
       xBTC = xBTC + attn_residual
       ### POST ATTN RESIDUAL
       ## norm -> MLP -> reconnect
-      post_attn_residual = RMSnorm(xBTC, layer_params.post_attention_layernorm_weight, layer_params.post_attention_layernorm_bias)
+      post_attn_residual = RMSnorm_bias(xBTC, layer_params.post_attention_layernorm_weight, layer_params.post_attention_layernorm_bias)
       post_attn_residual = vision_model_global_feed_forward(post_attn_residual, layer_params) # replace with fully connected, i think
       xBTC = xBTC + post_attn_residual
       return xBTC, None 
@@ -219,7 +219,7 @@ def vision_processing(vision_model_params: VisionModel, patches: jax.Array, aspe
   B, L, T, P, C = intermediate_features.shape
   
   ## process these through 8 layer global encoder
-  imgBPC = RMSnorm(imgBPC, vision_model_params.layernorm_pre_weight, vision_model_params.layernorm_pre_bias)
+  imgBPC = RMSnorm_bias(imgBPC, vision_model_params.layernorm_pre_weight, vision_model_params.layernorm_pre_bias)
   
   ## Post tile embeddings
   post_tile_embedding_weight = vision_model_params.post_tile_positional_embedding_embedding_weight[aspect_ratio_id]
@@ -234,7 +234,7 @@ def vision_processing(vision_model_params: VisionModel, patches: jax.Array, aspe
 
   imgBPC = rearrange(imgBTPC, "B T P C -> B (T P) C")
   global_features = global_encoder(vision_model_params, imgBPC) # B TP C
-  global_features = RMSnorm(global_features, vision_model_params.layernorm_post_weight, vision_model_params.layernorm_post_bias)
+  global_features = RMSnorm_bias(global_features, vision_model_params.layernorm_post_weight, vision_model_params.layernorm_post_bias)
 
   ## concatenate layers into 7680 channel size
   global_features = jnp.reshape(global_features, (B, 1, T*P, C)) # single layer. append to the key features layers.
@@ -251,11 +251,12 @@ def vision_processing(vision_model_params: VisionModel, patches: jax.Array, aspe
 def cross_attention_layer(layer_params: LangModelCrossAttentionLayer, xBTC: TensorBTC, xBTC_image: TensorBTC, padding_mask: jax.Array) -> TensorBTC:
   # vision => k, v
   # text => q
-  B, T, C  = xBTC.shape
+  B, T_self, Cq  = xBTC.shape
+  B, T_cross, Ckv = xBTC_image.shape
   H_Q = 32 # TODO replace the hardcoding
   H_KV = 8 # GQA kv-heads
   
-  q_weight = jnp.transpose(layer_params.cross_attn_k_proj_weight)
+  q_weight = jnp.transpose(layer_params.cross_attn_q_proj_weight)
   k_weight = jnp.transpose(layer_params.cross_attn_k_proj_weight)
   v_weight = jnp.transpose(layer_params.cross_attn_v_proj_weight)
   
@@ -263,15 +264,43 @@ def cross_attention_layer(layer_params: LangModelCrossAttentionLayer, xBTC: Tens
   K = xBTC_image @ k_weight
   V = xBTC_image @ v_weight
 
-  # rope?
-  Q = rope(Q)
-  K = rope(K)
+  # rope? not in crossattn
+  # Q = rope(Q)
+  # K = rope(K)
 
+  ## GQA
+  d_Q = Q.shape[-1]//H_Q
+  d_KV = K.shape[-1]//H_KV
+  Q = jnp.reshape(Q, (B, T_self, H_Q, d_Q)) # (B, T, d_k) => (B, T, H_Q, d_Q)
+  Q = jnp.einsum("BTHD->BHTD", Q)
+  K = jnp.reshape(K, (B, T_cross, H_KV, d_KV)) # (B, T, d_k) => (B, T, H_KV, d_KV)
+  K = jnp.einsum("BThd->BhTd", K)
+  V = jnp.reshape(V, (B, T_cross, H_KV, d_KV)) # (B, T, d_v) => (B, T, H_KV, d_KV)
+  V = jnp.einsum("BThd->BhTd", V) # (B, T, H, D) => (B, H, T, D)
+  
+  # RMS after splitting into GQA heads
   Q = RMSnorm(Q, layer_params.cross_attn_q_norm_weight)
   K = RMSnorm(K, layer_params.cross_attn_k_norm_weight)
-
-  xBTC_attn_residual = GQA_attention(layer_params, Q, K, V, padding_mask, B, T, H_Q, H_KV)
   
+  G = H_Q // H_KV # groups
+  Q = rearrange(Q, "B (h G) T D -> B G h T D", G=G)
+  
+
+  # Compute attention scores
+  attention_table = jnp.einsum("BGhTD,Bhtd->BGhTt", Q, K) / jnp.sqrt(d_KV) # (B,H_Q,T,d_Q) @ (B,H_Q,d_KV,T) => (B, H_Q, T, T)
+  query_padding_mask = jnp.where(padding_mask, -jnp.inf, 0) # add pre-softmax
+  query_padding_mask = jnp.reshape(query_padding_mask, (B, 1, 1, T_self, 1))
+  attention_scores = jax.nn.softmax((query_padding_mask + attention_table).astype(jnp.float32), axis=-1).astype("bfloat16") # ASSUMPTION: does not need axis=-1, -2
+  Z = jnp.einsum("BGhTt,Bhtd->BGhTd", attention_scores, V)   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
+  # bug: "BHTT,BhTd->BHTd" breaks this. future: don't use the same letter twice. be specific about the dimensions in the operation
+
+  # reshape back into xBTC_residual
+  Z = rearrange(Z, "B G h T D -> B (G h) T D") # group the 4x8 heads into 32 heads
+  Z = rearrange(Z, "B H T D -> B T H D") # Swap head and time dim
+  Z = jnp.reshape(Z, (B, T_self, Z.shape[-1]*H_Q))  # (B, H_Q, T, d_KV) => (B, T, Z)
+
+  # project BHTd_v back to BHTd
+  xBTC_attn_residual = Z @ jnp.transpose(layer_params.cross_attn_o_proj_weight) # (B, T, Z) @ (Z, C) => B, T, C # ASSUMPTION does not need transposition
   return xBTC_attn_residual
 
 
