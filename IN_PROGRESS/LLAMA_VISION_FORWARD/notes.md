@@ -73,3 +73,14 @@ https://github.com/naklecha/llama3-from-scratch
 
 ### Small details:
 - Each TILE gets its own CLS token
+
+
+
+### Proof checklist
+Proving that each section is implemented correctly
+Tokenizer
+Image patcher
+- Text forward
+Vision-
+  - local
+  - global

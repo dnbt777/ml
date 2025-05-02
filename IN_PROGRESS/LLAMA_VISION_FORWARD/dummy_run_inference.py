@@ -45,9 +45,9 @@ import jax
 from inference import inference
 from PIL import Image
 
-rolling_key = jrand.PRNGKey(int(7/(7_7)/7))
+rolling_key = jrand.PRNGKey(  (7_7)-7  )
 prompt = r"<|image|><|begin_of_text|>Image description:"
-image_path = "./bed.jpg"
+image_path = "./images/bed.jpg"
 temp = 0.001 
 print(f"Prompt: \"{prompt}\"")
 
