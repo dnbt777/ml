@@ -5,6 +5,7 @@ from typing import NamedTuple, List, TypeAlias, Union
 ## Tokenizer types
 class Tokenizer(NamedTuple):
   vocab: dict
+  additional_vocab: dict
   merges: dict
 
 Text: TypeAlias = str

@@ -45,9 +45,9 @@ import jax
 from inference import inference
 from PIL import Image
 
-rolling_key = jrand.PRNGKey(  (7_7)-7  )
-prompt = "<|image|> Describe the image."
-image_path = "./images/bed.jpg"
+rolling_key = jrand.PRNGKey((7_7)-7)
+prompt = r"<|image|><|begin_of_text|>Image description:"
+image_path = "./bed.jpg"
 temp = 0.001 
 print(f"Prompt: \"{prompt}\"")
 
@@ -65,7 +65,6 @@ for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
   context = prompt + answer
   context_tokens = jax.lax.concatenate([jnp.array([bot_token]), jnp.array(encode(tokenizer, context))], 0)
   context_tokens = jnp.pad(context_tokens, (0, context_window_size - len(context_tokens)), constant_values=padding_token)
-  print(context_tokens)
   next_token, predicted_tokens = inference(llama_params, context_tokens, image, temp, rolling_key)
   print("next chunk:", predicted_tokens)
   next_chunk = decode(tokenizer, jnp.array([next_token]))
