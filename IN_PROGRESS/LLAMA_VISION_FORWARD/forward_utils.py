@@ -9,23 +9,33 @@ from llama_types import (
 )
 
 
-# unused
-def layer_norm(x, weight):
+def layer_norm(x):
+  # ASSUMPTION: layer norm is axis=-1
+  mean = jnp.mean(x, axis=-1, keepdims=True, dtype="float32")
+  var = jnp.mean((x - mean)**2, axis=-1, keepdims=True, dtype="float32")
+  x = (x - mean) / jnp.sqrt(var + 0.00001) # config.json > norm_eps : 0.00001
+  return x
+
+def layer_norm_weight(x, weight):
   # ASSUMPTION: layer norm is axis=-1
   x = weight * (x - jnp.mean(x, axis=-1, keepdims=True, dtype="bfloat16")) / (jnp.std(x, axis=-1, keepdims=True, dtype="bfloat16") + 1e-5)
   return x
 
 
+def layer_norm_bias(x, weight, bias):
+  # ASSUMPTION: layer norm is axis=-1
+  x = weight * (x - jnp.mean(x, axis=-1, keepdims=True, dtype="bfloat16")) / (jnp.std(x, axis=-1, keepdims=True, dtype="bfloat16") + 1e-5)
+  return x + bias
 
 
 def RMSnorm_bias(x: TensorBTC, weight: jax.Array, bias: jax.Array) -> TensorBTC:
-  rms = jnp.sqrt(jnp.mean(x * x, axis=-1, keepdims=True, dtype="bfloat16"))
-  return bias + weight*(x / (rms + 1e-5))
+  rms = jnp.sqrt(jnp.mean(x * x, axis=-1, keepdims=True, dtype="bfloat16") + 1e-6)
+  return bias + weight*(x/rms)
 
 
 def RMSnorm(x: TensorBTC, weight: jax.Array) -> TensorBTC:
-  rms = jnp.sqrt(jnp.mean(x * x, axis=-1, keepdims=True, dtype="bfloat16"))
-  return weight*(x / (rms + 1e-5))
+  rms = jnp.sqrt(jnp.mean(x*x, axis=-1, keepdims=True, dtype="bfloat16") + 1e-6)
+  return weight*(x/rms)
 
 def vision_model_global_feed_forward(
         x: TensorBTC,
@@ -43,6 +53,7 @@ def vision_model_local_feed_forward(
         layer_params: VisionModelLocalLayer,
         ) -> TensorBTC:
     x = x @ jnp.transpose(layer_params.mlp_fc1_weight) + layer_params.mlp_fc1_bias
+    x = jax.nn.gelu(x) # see config.json for hidden_act
     x = x @ jnp.transpose(layer_params.mlp_fc2_weight) + layer_params.mlp_fc2_bias
     return x
 

@@ -46,22 +46,26 @@ from inference import inference
 from PIL import Image
 
 rolling_key = jrand.PRNGKey(  (7_7)-7  )
-prompt = "<|image|> Describe the image."
-image_path = "./images/bed.jpg"
+prompt = "<|image|>\nThe capital of france is "
+image_path = "./images/image-1.png"
 temp = 0.001 
 print(f"Prompt: \"{prompt}\"")
 
-DEBUG = False 
+DEBUG = True 
 if DEBUG:
   jax.config.update("jax_disable_jit", True)
+  # jax.config.update("jax_debug_nans", True)
 
 answer = ""
 context_window_size = 32 # if this is not done, it will recompile repeatedly forever at each new context window size
+max_tokens = 1
 # inference loop
 start = time.time()
 image = Image.open(image_path)
 print("IMG SHAPE: ", jnp.array(image).shape)
 for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
+  if i == max_tokens:
+      break
   context = prompt + answer
   context_tokens = jax.lax.concatenate([jnp.array([bot_token]), jnp.array(encode(tokenizer, context))], 0)
   context_tokens = jnp.pad(context_tokens, (0, context_window_size - len(context_tokens)), constant_values=padding_token)

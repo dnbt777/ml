@@ -1,0 +1,2 @@
+cp ./custom_vllm/mllama.py ./.venv/lib/python3.12/site-packages/vllm/model_executor/models/mllama.py
+cp ./custom_transformers/modeling_mllama.py ./.venv/lib/python3.12/site-packages/transformers/models/mllama/modeling_mllama.py

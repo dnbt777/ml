@@ -23,6 +23,7 @@ from PIL import Image
 
 rolling_key = jrand.PRNGKey(  (7_7)-7  )
 prompt = "<|image|><|begin_of_text|> Describe the image."
+prompt = "uhhhhhhhhhhhhhhhhhhhhhhhhhhh hello??? 🦙"
 image_path = "./images/bed.jpg"
 temp = 0.001 
 print(f"Prompt: \"{prompt}\"")
@@ -43,4 +44,11 @@ for i in range(context_window_size - len(encode(tokenizer, prompt)) - 1):
   context_tokens = jnp.pad(context_tokens, (0, context_window_size - len(context_tokens)), constant_values=padding_token)
   print(context_tokens)
   print([decode(tokenizer, [token]) for token in context_tokens])
+  print(decode(tokenizer, context_tokens))
+  from vision_forward import image_to_tiles 
+  # CLIP norm - norm across R, G, and B separately
+  tile_resolution = (448, 448)
+  pixel_values, aspect_ratio = image_to_tiles(image, tile_resolution)
+  print("pixel_values: ",aspect_ratio, pixel_values)
+  
   break

@@ -169,6 +169,9 @@ def load_model_params(paths: str) -> LlamaParams:
             with safe_open(path, framework="numpy") as f:
                 if key in f.keys():
                     tensor = f.get_tensor(key).astype("bfloat16")
+                    #print(key)
+                    #print(tensor)
+                    #print()
                     return jax.device_put(tensor)
         raise KeyError(f"Tensor with key '{key}' not found")
 

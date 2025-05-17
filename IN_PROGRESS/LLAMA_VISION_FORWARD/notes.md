@@ -1,5 +1,9 @@
 # Llama 3.2 Vision 11B
 
+
+## PROOF todo
+- make sure vision attention masks match
+
 ## Progress
 ### TODO in this order:
 - get runpod set up so I can do development on a 3090 (DONE)
@@ -67,7 +71,10 @@ https://github.com/naklecha/llama3-from-scratch
 
 
 
-
+### Future advice
+- snowclipsed debugging method
+- organize files better from the start
+- use strides to print out full arrays
 
 
 
@@ -78,9 +85,9 @@ https://github.com/naklecha/llama3-from-scratch
 
 ### Proof checklist
 Proving that each section is implemented correctly
-Tokenizer
+Tokenizer DONE
 Image patcher
 - Text forward
-Vision-
+Vision
   - local
   - global

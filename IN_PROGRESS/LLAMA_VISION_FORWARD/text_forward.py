@@ -17,9 +17,9 @@ def GQA_attention(layer_params, Q, K, V, padding_mask, B, T, H_Q, H_KV):
   Q = jnp.reshape(Q, (B, T, H_Q, d_Q)) # (B, T, d_k) => (B, T, H_Q, d_Q)
   Q = jnp.einsum("BTHD->BHTD", Q)
   K = jnp.reshape(K, (B, T, H_KV, d_KV)) # (B, T, d_k) => (B, T, H_KV, d_KV)
-  K = jnp.einsum("BThd->BhTd", K)
+  K = jnp.einsum("Bthd->Bhtd", K)
   V = jnp.reshape(V, (B, T, H_KV, d_KV)) # (B, T, d_v) => (B, T, H_KV, d_KV)
-  V = jnp.einsum("BThd->BhTd", V) # (B, T, H, D) => (B, H, T, D)
+  V = jnp.einsum("Bthd->Bhtd", V) # (B, T, H, D) => (B, H, T, D)
   
   G = H_Q // H_KV # groups
   Q = rearrange(Q, "B (h G) T D -> B G h T D", G=G)
@@ -28,20 +28,20 @@ def GQA_attention(layer_params, Q, K, V, padding_mask, B, T, H_Q, H_KV):
   causal_mask_shape = attention_table.shape[-2:]
   causal_mask = jnp.triu(jnp.ones(causal_mask_shape), k=1).astype(bool)
   causal_mask = jnp.where(causal_mask, -jnp.inf, 0)
-  query_padding_mask = jnp.where(padding_mask, -jnp.inf, 0) # add pre-softmax
-  key_padding_mask = jnp.where(padding_mask, 0, 1) # multiply post-softmax along the t dim in BHTt
-  attention_scores = jax.nn.softmax((query_padding_mask + causal_mask + attention_table).astype(jnp.float32), axis=-1).astype("bfloat16") # ASSUMPTION: does not need axis=-1, -2
-  attention_scores = key_padding_mask[jnp.newaxis, ..., jnp.newaxis] * attention_scores # the final n rows should be all 0 (padding tokens)
+  key_padding_mask = jnp.where(padding_mask, -jnp.inf, 0) # add pre-softmax
+  query_padding_mask = jnp.where(padding_mask, 0, 1) # multiply post-softmax along the t dim in BHTt
+  attention_scores = jax.nn.softmax((key_padding_mask + causal_mask + attention_table).astype(jnp.float32), axis=-1).astype("bfloat16") # ASSUMPTION: does not need axis=-1, -2
+  attention_scores = query_padding_mask[jnp.newaxis, ..., jnp.newaxis] * attention_scores # the final n rows should be all 0 (padding tokens)
   Z = jnp.einsum("BGhTt,Bhtd->BGhtd", attention_scores, V)   # (B,H,T,T) @ (B,H,T,d_v//H_KV) => (B, H, T, d_v//H_KV)
   # bug: "BHTT,BhTd->BHTd" breaks this. future: don't use the same letter twice. be specific about the dimensions in the operation
 
   # reshape back into xBTC_residual
   Z = rearrange(Z, "B G h T D -> B (G h) T D") # group the 4x8 heads into 32 heads
   Z = rearrange(Z, "B H T D -> B T H D") # Swap head and time dim
-  Z = jnp.reshape(Z, (B, T, Z.shape[-1]*H_Q))  # (B, H_Q, T, d_KV) => (B, T, Z)
+  Z = rearrange(Z, "B T H D -> B T (H D)") # recombine channel dim
 
   # project BHTd_v back to BHTd
-  xBTC_attn_output = Z @ jnp.transpose(layer_params.self_attn_o_proj_weight) # (B, T, Z) @ (Z, C) => B, T, C # ASSUMPTION does not need transposition
+  xBTC_attn_output = Z @ jnp.transpose(layer_params.self_attn_o_proj_weight) # (B, T, Z) @ (Z, C) => B, T, C # ASSUMPTION needs transposition
 
   return xBTC_attn_output
 
@@ -52,7 +52,10 @@ def GQA_attention(layer_params, Q, K, V, padding_mask, B, T, H_Q, H_KV):
 @jax.jit
 def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: TensorBTC, padding_mask: jax.Array) -> TensorBTC:
   # input layernorm
+  #print("pre input_RMSnorm xBTC:", xBTC)
+  #print("input_RMSnorm weight: ",layer_params.input_layernorm_weight) 
   xBTC = RMSnorm(xBTC, layer_params.input_layernorm_weight)
+  #print("post input_RMSnorm xBTC:", xBTC)
 
   # Reshape input into attention heads
   # xBTC => xBHTd
@@ -63,8 +66,10 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
   Q = xBTC @ jnp.transpose(layer_params.self_attn_q_proj_weight)  # (BTC) @ (d, d_k) => (B, T, d_q)
   K = xBTC @ jnp.transpose(layer_params.self_attn_k_proj_weight) # (BTC) @ (d, d_k) => (B, T, d_k)
   V = xBTC @ jnp.transpose(layer_params.self_attn_v_proj_weight) # (BTC) @ (d, d_v) => (B, T, d_v) 
-  # RoPE 
+  # RoPE
+  #print("pre-rope Q:", Q)
   Q = rope(Q)
+  #print("post-rope Q:", Q)
   K = rope(K)
   # attention heads and KV-groups are introduced at the QKV stage
   
@@ -77,6 +82,7 @@ def self_attention_layer(layer_params: LangModelSelfAttentionLayer, xBTC: Tensor
 
 
 # trainable if needed
+# not used in multimodal
 # TODO: implement text llama 3.1 first and test it
 # model -> TensorBTC -> TensorBTC -> float -> TensorBTC
 @jax.jit
