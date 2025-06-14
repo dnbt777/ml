@@ -2,7 +2,8 @@
 
 
 ## PROOF todo
-- make sure vision attention masks match
+- make sure the attention output matches. currently its off by a bit
+- maybe im supposed to make the image encoder causal masked? hmmmmmmm
 
 ## Progress
 ### TODO in this order:

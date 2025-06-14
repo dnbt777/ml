@@ -4,7 +4,7 @@ from einops import rearrange
 from PIL import Image
 from forward_utils import (
     RMSnorm, RMSnorm_bias,
-    layer_norm, layer_norm_bias,
+    layer_norm,
     feed_forward, rope, rope_channel,
     vision_model_local_feed_forward, vision_model_global_feed_forward
 )
@@ -15,6 +15,7 @@ from text_forward import GQA_attention # OPTIMIZATION move to separate file
 from llama_types import *
 from typing import Tuple
 
+import tdiff
 
 def aspect_ratio_mask(aspect_ratio_id: int) -> jax.Array:
     aspect_ratios = [(1, 1), (1, 2), (1, 3), (1, 4), (2, 1), (2, 2), (3, 1), (4, 1)]
@@ -73,105 +74,36 @@ def padded_aspect_ratio_attention_mask(aspect_ratio_id: int) -> jax.Array:
     return attention_mask
 
 
-def preprocess_image(image: jax.Array) -> jax.Array:
-  image_mean = jnp.array([
-    0.48145466,
-    0.4578275,
-    0.40821073
-  ], jnp.float32)
-  image_std = jnp.array([
-    0.26862954,
-    0.26130258,
-    0.27577711
-  ], jnp.float32)
-  rescale_factor = jnp.float32(0.00392156862745098) # 1 / 255.0
-  rgb_img = jnp.array(image, dtype=jnp.float32)[..., :3]
-  pixel_values = (rgb_img*rescale_factor - image_mean)/image_std
-  return pixel_values
+
+#jax.config.update("jax_default_matmul_precision", "tensorfloat32")
 
 
-# img -> (h, w) -> (p, p) -> 2D array of patches(patch = 2D array of pixels)
-def image_to_tiles(image: Image, tile_resolution) -> jax.Array:
-    tile_width, tile_height = tile_resolution
-    max_tiles = 4 # hardcoded for now
-    ## get aspect ratio
-    width, height = image.size
-    aspect_ratio = int(jnp.ceil(height/min(width, height))), int(jnp.ceil(width/min(width, height))) # convention here is (h, w)
-    if aspect_ratio == (1, 1) and (width > tile_width or height > tile_height):
-        aspect_ratio = (2, 2)
+def unfold_convolve(image_tiles, kernel, patch_resolution):
+    B, T, C, H, W = image_tiles.shape
+    hp, wp = patch_resolution
+    # flatten kernel
+    flattened_kernel = rearrange(kernel, "O C H W -> (C H W) O") # vllm collapses this down
+    tdiff.capture(flattened_kernel.T, name="pre_convolve.patch_embedding_weight", project="jax")
+    # collapse image tiles
+    image_tiles = image_tiles.astype(jnp.bfloat16)
+    image_tiles = rearrange(image_tiles, "B T C (h hp) (w wp) -> (B T) (h w) (C hp wp)", hp=hp, wp=wp, h=H//hp, w=W//wp)
+    tdiff.capture(image_tiles, name="pre_convolve.prematmul_tiles", project="jax")
+    # matmul
+    x = jnp.matmul(
+        image_tiles,
+        flattened_kernel
+    )#.astype(jnp.bfloat16)
+    tdiff.capture(x, name="post_convolve_linear.hidden_state", project="jax")
+    #x = jnp.einsum("BNP,OP->BNO", x, kernel_flat,
+    #               precision=jax.lax.Precision.DEFAULT,
+    #               preferred_element_type=jnp.float32,
+    #              ) # => (B T) (h w) (1280)
+    # uncollapse
+    x = rearrange(
+        x, "(B T) (h w) O -> B T (h w) O",
+        B=B, T=T, h=H//hp, w=W//wp)
+    return x
     
-    ## get aspect ratio, scale, and aspect ratio id
-    # https://github.com/huggingface/transformers/blob/716819b8309324302e00a3488a3c3d6faa427f79/src/transformers/models/mllama/image_processing_mllama.py#L71
-    aspect_ratios = [(1, 1), (1, 2), (1, 3), (1, 4), (2, 1), (2, 2), (3, 1), (4, 1)] # 9 is 'none'
-    # https://github.com/huggingface/transformers/blob/716819b8309324302e00a3488a3c3d6faa427f79/src/transformers/models/mllama/image_processing_mllama.py#L134
-    scaling_options = [
-        min(
-            tile_height*canvas_height/height, # (pixels/tile x tiles) / pixels 
-            tile_width*canvas_width/width     # (pixels/tile x tiles) / pixels 
-        )
-        for canvas_height, canvas_width in aspect_ratios   # convention here is (h, w)
-    ] # min scaling needed for each aspect ratio to fill its tile canvas
-    # prefer upscaling. pick the smallest option, if there is one.
-    upscaling_options = [scale for scale in scaling_options if scale >= 1]
-    if len(upscaling_options) > 0:
-        scale = min(upscaling_options)
-    # otherwise pick the largest downscaling (minimizing changes)
-    else:
-        downscaling_options = [scale for scale in scaling_options if scale < 1]
-        scale = max(scaling_options)
-    # pick the canvas size with the smallest area
-    smallest_area, best_idx = 100000000, None
-    for idx, scaling_option in enumerate(scaling_options):
-        if scaling_option != scale:
-            continue
-        else:
-            tiles_h, tiles_w = aspect_ratios[idx]
-            tile_width, tile_height = tile_resolution
-            area = tiles_h*tile_height + tiles_w*tile_width
-            if area < smallest_area:
-                best_idx, smallest_area = idx, area
-    aspect_ratio = aspect_ratios[best_idx]
-    # https://github.com/huggingface/transformers/blob/716819b8309324302e00a3488a3c3d6faa427f79/src/transformers/models/mllama/image_processing_mllama.py#L451
-    aspect_ratio_id = aspect_ratios.index(aspect_ratio) + 1
-    # https://github.com/huggingface/transformers/blob/e3b70b0d1c15c87ba2010b00830fbd92b2c50252/src/transformers/models/mllama/image_processing_mllama.py#L314
-    aspect_ratio_mask = jnp.zeros((4,))
-    for idx in range(smallest_area):
-        aspect_ratio_mask = aspect_ratio_mask.at[idx].set(1) # leave unused for now. in future optimize 1) for fast loading and 2) so batches have same tile count
-
-    # scale to tiles
-    tile_width, tile_height = tile_resolution
-    canvas_width, canvas_height = tile_width*aspect_ratio[1], tile_height*aspect_ratio[0]
-
-    new_width, new_height = int(scale*width), int(scale*height)
-    # https://github.com/huggingface/transformers/blob/716819b8309324302e00a3488a3c3d6faa427f79/src/transformers/models/mllama/image_processing_mllama.py#L840
-    image = image.resize((new_width, new_height), resample=Image.BILINEAR) # PIL.Image.BILINEAR. default is BICUBIC, but thats not whats used here
-    
-    # create canvas of 0s in the shape of the tiles
-    canvas = jnp.zeros((canvas_height, canvas_width, 3), dtype=jnp.float32) # doesnt work with batches rn
-    pixel_array = jnp.array(image, dtype=jnp.float32) # go from (w, h) convention (images) to (h, w) convention (linalg arrays)
-    print("PIXEL ARRAY SHAPE", pixel_array.shape)
-    # get normed pixel values
-
-    # add img to the top left corner
-    print("CANVAS SHAPE", canvas.shape)
-    pixel_array = pixel_array[..., :3] # RGB only
-    canvas = canvas.at[0:new_height, 0:new_width].set(pixel_array)
-
-    # return tiles
-    pixel_values = preprocess_image(canvas)
-    print("PIXEL VALUES SHAPE", pixel_values.shape)
-    tiles = rearrange(pixel_values, "(Th h) (Tw w) C -> (Th Tw) C h w", Th=int(aspect_ratio[0]), Tw=int(aspect_ratio[1]))
-    # pad tiles to 4
-    tile_count = aspect_ratio[0]*aspect_ratio[1]
-    tile_canvas = jnp.zeros((max_tiles, 3, tile_height, tile_width), dtype=jnp.float32)
-    tile_canvas = tile_canvas.at[0:tile_count].set(tiles)
-    print("ASPECT RATIO", aspect_ratio)
-    print("TILE 0", tile_canvas[0])
-    print("TILE 1", tile_canvas[1])
-    print("TILE 2", tile_canvas[2])
-    print("TILE 3", tile_canvas[3])
-    
-    return tile_canvas.astype("bfloat16"), aspect_ratio_id
 
 
 def embed_tiles(vision_model_params: VisionModel, image_tiles: jax.Array, aspect_ratio_id: int) -> TensorBTC:
@@ -180,21 +112,14 @@ def embed_tiles(vision_model_params: VisionModel, image_tiles: jax.Array, aspect
   print("shapes: ", image_tiles.shape, vision_model_params.patch_embedding_weight.shape)
   # (B*T, 3, 224, 224) convolve (1280, 3, 14, 14) => (B*T, 16, 16, 1280)
   patch_resolution = (14, 14)
+  tdiff.capture(image_tiles[0], name="pre_convolve.pixel_values", project="jax")
+  imgBTPC = unfold_convolve(image_tiles, vision_model_params.patch_embedding_weight, patch_resolution)
+  #imgBTPC = imgBTPC.astype("bfloat16")
+  tdiff.capture(imgBTPC[0], name="post_convolve.hidden_state", project="jax")
 
-  # print("MllamaVisionModel | forward | pixel values:", image_tiles.shape, aspect_ratio_id, image_tiles[0]) # works, no need to print
-  image_tiles = rearrange(image_tiles, "B T C H W -> (B T) C H W")
-  imgBTPC = jax.lax.conv_general_dilated(
-      image_tiles,
-      vision_model_params.patch_embedding_weight,
-      patch_resolution,
-      padding="valid",
-      dimension_numbers=("NCHW", "OIHW", "NCHW")
-  ) # ((B, T), C, Ph, Pw) == (B*T, 1280, 16, 16)
-
-  imgBTPC = rearrange(imgBTPC, "(B T) C Ph Pw -> B T (Ph Pw) C", B=B)
+  # capture these vals in vllm. see if that helps. but then after just keep going
+  # and then yeah see abt minimizing error. when it becomes too much, then fix it
   B, T, P, C = imgBTPC.shape
-
-  # print("MllamaVisionModel | forward | post conv:", imgBTPC.shape, imgBTPC.dtype, imgBTPC) # DONE
 
   ## pre tile positional embeddings
   pre_tile_positional_embedding = vision_model_params.pre_tile_positional_embedding_embedding_weight[aspect_ratio_id] # (5120)
@@ -206,16 +131,14 @@ def embed_tiles(vision_model_params: VisionModel, image_tiles: jax.Array, aspect
   # that tiles can be arranged in. there are 4 max tiles. 1280*4 = 5120.
   # this is a positional embedding for each tile. NOT each patch, but each tile
   imgBTPC = imgBTPC + pre_tile_positional_embedding 
-
-  # print("MllamaVisionModel | forward | post tile embed:", imgBTPC.shape, pre_tile_positional_embedding.dtype, vision_model_params.pre_tile_positional_embedding_gate.dtype, imgBTPC)
+  tdiff.capture(imgBTPC, name="post_tile_pos_embed.hidden_state", project="jax")
 
   # add cls token before gated positional embedding
   cls_token = vision_model_params.class_embedding
   cls_token = jnp.reshape(cls_token, shape=(1, 1, 1, -1))
   cls_tokens = jnp.repeat(cls_token, T, axis=1) # one cls for each tile. T = max tiles always, since there is tile padding
   imgBTPC = jax.lax.concatenate([cls_tokens, imgBTPC], dimension=2) # add class token as first 'patch' for each tile
-
-  # print("MllamaVisionModel | forward | post cls token:", imgBTPC.shape, imgBTPC)
+  tdiff.capture(imgBTPC[0], name="post_cls_token.hidden_state", project="jax")
 
   ## gated positional embedding
   # https://github.com/huggingface/transformers/blob/main/src/transformers/models/mllama/modeling_mllama.py#L150
@@ -231,9 +154,11 @@ def embed_tiles(vision_model_params: VisionModel, image_tiles: jax.Array, aspect
   gated_tile_embedding = jnp.tanh(gate) * tile_embedding
   gated_tile_embedding = jnp.reshape(gated_tile_embedding, (1, T, 1+P, C))  # T = max_tiles = 4
   imgBTPC = imgBTPC + gated_tile_embedding 
-  # print("MllamaVisionModel | forward | post pos embed:", imgBTPC.shape, imgBTPC)
+  tdiff.capture(imgBTPC, name="post_gated_pos_embed.hidden_state", project="jax")
 
-  imgBTPC = layer_norm(imgBTPC)*vision_model_params.layernorm_pre_weight + vision_model_params.layernorm_pre_bias
+  imgBTPC = layer_norm(jnp.float32(imgBTPC), jnp.float32(vision_model_params.layernorm_pre_weight), jnp.float32(vision_model_params.layernorm_pre_bias))
+  imgBTPC = jnp.bfloat16(imgBTPC)
+  tdiff.capture(imgBTPC, name="post_layernorm.hidden_state", project="jax")
 
   ## Add padding to make token count a multiple of 8 
   # add padding tokens to the right
@@ -247,107 +172,159 @@ def embed_tiles(vision_model_params: VisionModel, image_tiles: jax.Array, aspect
 
 
 def noncausal_multihead_attention(attention_layer: AttentionLayer, xBTC: TensorBTC, attention_mask: jax.Array) -> TensorBTC:
+    #print("ATTENTION | INPUT | ", xBTC.shape, xBTC.dtype, jnp.sum(xBTC[0]), jnp.sum(xBTC[0], axis=-1), jnp.sum(xBTC[0], axis=-2))
     # ASSUMPTION: no GQA here
     # ASSUMPTION: not transposed (probably incorrect)
     q_weight = jnp.transpose(attention_layer.self_attn_q_proj_weight)
     k_weight = jnp.transpose(attention_layer.self_attn_k_proj_weight)
     v_weight = jnp.transpose(attention_layer.self_attn_v_proj_weight)
 
-    Q = xBTC @ q_weight # B, T, Q
-    K = xBTC @ k_weight # B, T, KV
-    V = xBTC @ v_weight # B, T, KV
+    Q = (xBTC @ q_weight) # B, T, Q
+    K = (xBTC @ k_weight) # B, T, KV
+    V = (xBTC @ v_weight) # B, T, KV
+
+    #print("QKV", jnp.sum(Q), jnp.sum(K), jnp.sum(V))
 
     # multi head
     attention_heads = 16 # hardcoded from config.json
-    Q = rearrange(Q, "B T (H q) -> B H T q", H=attention_heads)
-    Kt = rearrange(K, "B T (H k) -> B H k T", H=attention_heads)
-    V = rearrange(V, "B T (H v) -> B H T v", H=attention_heads)
-    print("SHAPES:", xBTC.shape, Q.shape, Kt.shape, V.shape)
+    Q = rearrange(Q, "B T (H q) -> B H T q", H=attention_heads).astype(jnp.float32)
+    Kt = rearrange(K, "B T (H k) -> B H k T", H=attention_heads).astype(jnp.float32)
+    V = rearrange(V, "B T (H v) -> B H T v", H=attention_heads).astype(jnp.float32)
+    #print("SHAPES:", xBTC.shape, Q.shape, Kt.shape, V.shape, Q.dtype)
+    #print("K FIRST HEAD", K.shape, K.dtype, K[0][0][0])
 
-    d = Q.shape[-1] # channel size per attention head
-    attention_mask = jnp.where(attention_mask, 0, -jnp.inf).astype("float32") # 1 => identity, 0 => mask out
-    attention_scores = jnp.einsum("BHTc,BHct->BHTt", Q, Kt)/jnp.sqrt(d)  # B H T T
-    print("SHAPES", attention_scores.shape, attention_mask.shape)
-    attention_scores = attention_scores + attention_mask # ignore until batching is implemented and all BTPC have 4 tiles
-    attention_table = jax.nn.softmax(attention_scores.astype("float32"), axis=-1).astype("float32")
-    attention_table = jnp.einsum("BHTt,BHTv->BHtv", attention_table, V)
-    Z = attention_table
+    scale = jnp.sqrt(jnp.float32(Q.shape[-1]))
+    # https://github.com/pytorch/pytorch/blob/51c6c5e156c64d84ff0cd06a559fa6786c96f128/aten/src/ATen/native/transformers/attention.cpp#L768
+    # in the above func, Q is passed in having already been rearranged into heads. so the channel dim (-1) is the head channel dim
     
+    # scale = scale.astype(Q.dtype) # https://github.com/pytorch/pytorch/blob/dcb3edd30dfe8e42aeb33e8551eee1f2c54441bd/torch/onnx/symbolic_opset14.py#L240
+    Q = Q / scale
+    
+    attention_scores = jnp.einsum("BHTc,BHct->BHTt", Q, Kt)  # B H T T
+    attention_scores = jnp.where(attention_mask[jnp.newaxis, jnp.newaxis, ...], attention_scores, jnp.finfo(jnp.float64).min) # 1 => identity, 0 => mask out
+    #attention_scores = attention_scores + attention_mask[jnp.newaxis, jnp.newaxis, ...] # ignore until batching is implemented and all BTPC have 4 tiles
+    #print("SCORES DTYPE", attention_scores.dtype)
+    attention_table = jax.nn.softmax(attention_scores, axis=-1) # TODO there is a precision problem here
+
     # rearrange heads at Z and project back to B T C
+    Z = jnp.einsum("BHqk,BHkv->BHqv", attention_table, V)
+    Z = Z.astype(jnp.bfloat16)
+    #print("attn output first row", Z.dtype, Z[0][0][0])
     Z = rearrange(Z, "B H T v -> B T (H v)") # B T V
 
     ## in the official implementation, the outprojection is row parallel linear
     # but I think that has the same numerical result as a normal matmul
-    # so for simplicity I am just going to do a normal matmul, since I am running an 11B model on a single GPU
+    # so for simplicity I am just going to do a normal matmul, since I am just running an 11B model on a single GPU
+    #print("pre-o", Z.dtype, Z[0][0])
+
+    o_weight = jnp.transpose(attention_layer.self_attn_o_proj_weight)
+    xBTC = Z @ o_weight # B T C 
+    return xBTC
+
+
+
+def _noncausal_multihead_attention(attention_layer: AttentionLayer, xBTC: TensorBTC, attention_mask: jax.Array) -> TensorBTC:
+    # ASSUMPTION: no GQA here
+    # ASSUMPTION: not transposed (probably incorrect)
+    q_weight = jnp.transpose(attention_layer.self_attn_q_proj_weight)
+    k_weight = jnp.transpose(attention_layer.self_attn_k_proj_weight)
+    v_weight = jnp.transpose(attention_layer.self_attn_v_proj_weight)
+
+    # q_weight, k_weight, v_weight = q_weight.astype(jnp.float64), k_weight.astype(jnp.float64), v_weight.astype(jnp.float64)
+    #xBTC = xBTC.astype(jnp.float32)
+
+    Q = (xBTC @ q_weight) # B, T, Q
+    K = (xBTC @ k_weight) # B, T, KV
+    V = (xBTC @ v_weight) # B, T, KV
+
+    attention_heads = 16 # hardcoded from config.json
+    Q = rearrange(Q, "B T (N H) -> B T N H", N=attention_heads)
+    K = rearrange(K, "B T (N H) -> B T N H", N=attention_heads)
+    V = rearrange(V, "B T (N H) -> B T N H", N=attention_heads)
+    #write_array_to_txt(Q, "outputs/jax_q.txt")
+    #write_array_to_txt(K, "outputs/jax_k.txt")
+    #write_array_to_txt(V, "outputs/jax_v.txt")
+    attention_mask = attention_mask[jnp.newaxis, ...] # Turn into batch
+    #write_array_to_txt(attention_mask, "outputs/jax_attention_mask.txt")
+    print("SHAPES:", xBTC.shape, Q.shape, K.shape, V.shape, Q.dtype, attention_mask.shape, attention_mask.dtype)
+    print("K FIRST HEAD", K.shape, K.dtype, K[0][0][0])
+    
+
+    Z = jax.nn.dot_product_attention(Q, K, V, mask=attention_mask, is_causal=False, implementation="xla")
+    print(Z.shape)
+    Z = rearrange(Z, "B T N H -> B T (N H)") # B T V
+    
+    print("pre-o", Z.dtype, Z.shape, Z[0][0])
+    
     xBTC = Z @ jnp.transpose(attention_layer.self_attn_o_proj_weight) # B T C 
 
-    print("SHAPES:", xBTC.shape, Z.shape, attention_table.shape, attention_scores.shape)
-
     return xBTC
-    
 
 
 # page 3 https://arxiv.org/pdf/2010.11929
-def local_encoder(vision_model_params: VisionModel, image_tiles: jax.Array, aspect_ratio_id: int) -> jax.Array:
-    ## embed tiles
-    imgBTPC = embed_tiles(vision_model_params, image_tiles, aspect_ratio_id) # minor thing: move this outside of the local encoder func
+def local_encoder(vision_model_params: VisionModel, imgBTPC: jax.Array, aspect_ratio_id: int) -> jax.Array:
     B, T, P, C = imgBTPC.shape
     imgBPC = rearrange(imgBTPC, "B T P C -> B (T P) C")
-
-    print("MllamaVisionModel | forward | start of local encoder:", imgBPC.shape, imgBPC)
+    tdiff.capture(imgBPC[0], name="pre_local_encoder.hidden_state", project="jax")
     ## LOCAL TRANSFORMER - scan through layers
     # NOT gated
     attention_mask = padded_aspect_ratio_attention_mask(aspect_ratio_id)
-    import numpy as np
-    np.set_printoptions(threshold=np.inf, linewidth=200) 
-    #print("ATTENTION MASK ROW SUM", jnp.sum(attention_mask, axis=0))
-    #print("ATTENTION MASK COL SUM", jnp.sum(attention_mask, axis=1))
-    stride = 100
-    print("ATTENTION MASK: Masked: ", (attention_mask.size - jnp.count_nonzero(attention_mask.astype("int8"))),"/", attention_mask.size, attention_mask.shape, )
-    print("ATTENTION MASK:", attention_mask[::stride, ::stride])
-    np.set_printoptions(threshold=10, edgeitems=3, linewidth=75)
+    tdiff.capture(attention_mask, name="pre_local_layers.attention_mask", project="jax")
     def scan_fn(imgBPC, layer_params):
         ### ATTENTION_RESIDUAL
         ## norm -> attn -> reconnect
         attn_residual = imgBPC
-        attn_residual = layer_norm(attn_residual)*layer_params.input_layernorm_weight + layer_params.input_layernorm_bias
+        attn_residual = layer_norm(jnp.float32(attn_residual), jnp.float32(layer_params.input_layernorm_weight), jnp.float32(layer_params.input_layernorm_bias))
+        attn_residual = jnp.bfloat16(attn_residual)
         #print("MllamaVisionEncoderLayer | post input layernorm state ", attn_residual.shape,layer_params.input_layernorm_weight.shape,layer_params.input_layernorm_bias.shape, attn_residual[0])
         attn_residual = noncausal_multihead_attention(layer_params, attn_residual, attention_mask)
-        #print("MllamaVisionEncoderLayer | post attn state ", attn_residual.shape, attn_residual)
+        #print("MllamaVisionEncoderLayer | post attn state ", attn_residual.dtype, attn_residual.shape, attn_residual)
         imgBPC = imgBPC + attn_residual
         ### POST ATTN RESIDUAL
         ## norm -> MLP -> reconnect
-        post_attn_residual = layer_norm(imgBPC)*layer_params.post_attention_layernorm_weight + layer_params.post_attention_layernorm_bias
+        post_attn_residual = layer_norm(jnp.float32(imgBPC), jnp.float32(layer_params.post_attention_layernorm_weight), jnp.float32(layer_params.post_attention_layernorm_bias))
+        post_attn_residual = jnp.bfloat16(post_attn_residual)
+        #print("MllamaVisionEncoderLayer | postattn residual 1 ", post_attn_residual.dtype, post_attn_residual.shape, post_attn_residual[0][0])
         post_attn_residual = vision_model_local_feed_forward(post_attn_residual, layer_params)
+        #print("MllamaVisionEncoderLayer | postattn residual postffw ", post_attn_residual.dtype, post_attn_residual.shape, post_attn_residual[0][0])
         imgBPC = imgBPC + post_attn_residual # NOT gated
         ### send imgBTC to next block and output the layer activation
         layer_activation = imgBPC
         return imgBPC, layer_activation # carry_over, output
     imgBPC, layer_activations = jax.lax.scan(scan_fn, imgBPC, vision_model_params.transformer.layers)
+    tdiff.capture(imgBPC, name="post_local_layers.hidden_state", project="jax")
     
     ## return layers 3, 7, 15, 23, 30
     layers = jnp.array([3, 7, 15, 23, 30]) # mlamma uses 0 indexing, so no + 1 
     selected_layer_activations = layer_activations[layers, ...] # (L, BT, P, C)
 
-    selected_layer_activations = rearrange(selected_layer_activations, "L (B T) P C -> B L T P C", B=B, T=T, P=P)
+    #selected_layer_activations = rearrange(selected_layer_activations, "L B (T P) C -> B L T P C", B=B, T=T, P=P)
     return imgBPC, selected_layer_activations
 
 
 
 
 def global_encoder(vision_model_params: VisionModel, key_features: jax.Array, aspect_ratio_id: int) -> jax.Array:
-  attention_mask = aspect_ratio_attention_mask(aspect_ratio_id)
+  attention_mask = padded_aspect_ratio_attention_mask(aspect_ratio_id)
   def scan_fn(xBTC, layer_params):
       ### ATTENTION_RESIDUAL
       # GATED
       ## norm -> attn -> reconnect
-      attn_residual = RMSnorm_bias(xBTC, layer_params.input_layernorm_weight, layer_params.input_layernorm_bias) # ASSUMPTION: this is RMSnorm
-      attn_residual = noncausal_multihead_attention(layer_params, attn_residual) # unmasked
+      attn_residual = layer_norm(
+          xBTC,
+          layer_params.input_layernorm_weight,
+          layer_params.input_layernorm_bias
+      ) # ASSUMPTION: this is RMSnorm
+      attn_residual = noncausal_multihead_attention(layer_params, attn_residual, attention_mask) # not causal masked, but it is masked tile and padding-wise
       gate = jnp.tanh(layer_params.gate_attn)
       xBTC = xBTC + attn_residual*gate
       ### POST ATTN RESIDUAL
       ## norm -> MLP -> reconnect
-      post_attn_residual = RMSnorm_bias(xBTC, layer_params.post_attention_layernorm_weight, layer_params.post_attention_layernorm_bias)
+      post_attn_residual = layer_norm(
+          xBTC,
+          layer_params.post_attention_layernorm_weight,
+          layer_params.post_attention_layernorm_bias
+      )
       post_attn_residual = vision_model_global_feed_forward(post_attn_residual, layer_params) # replace with fully connected, i think
       xBTC = xBTC + post_attn_residual*jnp.tanh(layer_params.gate_attn)
       return xBTC, None 
@@ -359,12 +336,15 @@ def global_encoder(vision_model_params: VisionModel, key_features: jax.Array, as
 
 # https://j-qi.medium.com/inside-mllama-3-2-understanding-metas-vision-language-model-architecture-ae12ad24dcbf
 # page 56 https://arxiv.org/pdf/2407.21783
-def vision_processing(vision_model_params: VisionModel, tiles: jax.Array, aspect_ratio_id: int) -> TensorBTC:
+def vision_processing(vision_model_params: VisionModel, image_tiles: jax.Array, aspect_ratio_id: int) -> TensorBTC:
+  imgBTPC = embed_tiles(vision_model_params, image_tiles, aspect_ratio_id) # minor thing: move this outside of the local encoder func
+  B, T, P, C = imgBTPC.shape
   ## process through 32 layer local encoder https://arxiv.org/abs/2010.11929
   ## save key intermediate features (layers 3 7 15 23 30
-  imgBPC, intermediate_features = local_encoder(vision_model_params, tiles, aspect_ratio_id) # (B L T P C)
-  B, L, T, P, C = intermediate_features.shape
-  print("after local encoder", imgBPC.shape, imgBPC)
+  imgBPC, intermediate_features = local_encoder(vision_model_params, imgBTPC, aspect_ratio_id) # (B L T P C)
+  tdiff.capture(imgBPC, name="post_local_encoder.hidden_state", project="jax")
+  intermediate_features = rearrange(intermediate_features, "L B P C -> B L P C")
+  B, L, P, C = intermediate_features.shape
   
   ## process these through 8 layer global encoder
   imgBPC = RMSnorm_bias(imgBPC, vision_model_params.layernorm_pre_weight, vision_model_params.layernorm_pre_bias)
@@ -374,30 +354,32 @@ def vision_processing(vision_model_params: VisionModel, tiles: jax.Array, aspect
   post_tile_embedding_weight = vision_model_params.post_tile_positional_embedding_embedding_weight[aspect_ratio_id]
   gate = vision_model_params.post_tile_positional_embedding_gate
   post_tile_embedding = post_tile_embedding_weight*gate
-  post_tile_embedding = jnp.reshape(post_tile_embedding, (1, 4, 1, C))[:, :T, ...] # 4 = MAX_TILES
+  post_tile_embedding = jnp.reshape(post_tile_embedding, (1, 4, 1, C)) # 4 = MAX_TILES
   #imgBPC = jnp.reshape(imgBPC, (B, T, P, C))
   # add padding to imgBPC to make it divisible by 4. then split into 4 tiles. then treat every
   # padding_patch_count = (8 - (imgBPC.shape[-2] % 8)) % 8
-  imgBTPC = rearrange(imgBPC, "B (T P) C -> B T P C", T=T)
+  max_tiles = 4
+  imgBTPC = rearrange(imgBPC, "B (T P) C -> B T P C", T=max_tiles) # always 4.
   imgBTPC = imgBTPC + post_tile_embedding # B T P C + 1 MAX_T 1 C => B T P C
-  print("post post_tile_embed", imgBTPC.shape)
+  tdiff.capture(imgBTPC, name="post_tile_embed.hidden_state", project="jax")
   
 
   imgBPC = rearrange(imgBTPC, "B T P C -> B (T P) C")
-  print("imgBPC", imgBPC.shape)
+  tdiff.capture(imgBPC, name="pre_global_encoder.hidden_state", project="jax")
   global_features = global_encoder(vision_model_params, imgBPC, aspect_ratio_id) # B TP C
-  print("global features", global_features.shape, global_features)
+  tdiff.capture(global_features, name="post_global_encoder.hidden_state", project="jax")
   global_features = RMSnorm_bias(global_features, vision_model_params.layernorm_post_weight, vision_model_params.layernorm_post_bias)
-  print("global features post rmsnorm", global_features.shape, global_features)
+  tdiff.capture(global_features, name="post_global_encoder_and_rms.hidden_state", project="jax")
 
   ## concatenate layers into 7680 channel size
-  global_features = jnp.reshape(global_features, (B, 1, T*P, C)) # single layer. append to the key features layers.
-  intermediate_features = rearrange(intermediate_features, "B L T P C -> B L (T P) C", T=T, P=P)
+  B, TP, C = global_features.shape
+  global_features = jnp.reshape(global_features, (B, 1, TP, C)) # single layer. append to the key features layers.
+  #intermediate_features = rearrange(intermediate_features, "B L T P C -> B L (T P) C", T=T, P=P)
   imgBLPC = jax.lax.concatenate([intermediate_features, global_features], dimension=1) # (B, Layer, TP, C)
-  imgBPC = rearrange(imgBLPC, "B L (T P) C -> B (T P) (L C)", L=L+1, T=T, P=P) # L += 1 from concatenation
-  print("final imgbpc", imgBPC)
+  imgBTC = rearrange(imgBLPC, "B L P C -> B P (L C)")
+  tdiff.capture(imgBTC, name="vision_processing_output.hidden_state", project="jax")
 
-  return imgBPC 
+  return imgBTC 
 
 
 
@@ -458,5 +440,4 @@ def cross_attention_layer(layer_params: LangModelCrossAttentionLayer, xBTC: Tens
   # project BHTd_v back to BHTd
   xBTC_attn_residual = Z @ jnp.transpose(layer_params.cross_attn_o_proj_weight) # (B, T, Z) @ (Z, C) => B, T, C # ASSUMPTION does not need transposition
   return xBTC_attn_residual
-
 

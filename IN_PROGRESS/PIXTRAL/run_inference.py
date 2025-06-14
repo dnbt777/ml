@@ -5,6 +5,9 @@ import jax.random as jrand
 
 ## load params
 from setup_utils import load_params, load_dummy_params
+from tokenizer import tokenize, decode
+
+
 
 filepath = './pixtral/consolidated.safetensors'
 pixtral_params = load_dummy_params(filepath)

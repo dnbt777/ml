@@ -26,7 +26,7 @@ def llama_forward(model_params: LlamaParams, context_tokens, image_tiles, aspect
   ### VISION ENCODING
   #print("starting image tiles:", image_tiles)
   xBTC_image = vision_processing(model_params.vision_model, image_tiles, aspect_ratio_id)
-  print("starting xBTC_image: ", xBTC_image)
+  print("starting xBTC_image: ", xBTC_image.shape)
     
   ## MULTI MODAL PROJECTOR
   # project image features into the model's semantic space (7198 -> 4096, or whatever)

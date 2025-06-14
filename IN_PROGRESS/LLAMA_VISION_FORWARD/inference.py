@@ -2,13 +2,13 @@ import jax
 import jax.numpy as jnp
 import jax.random as jrand
 from llama_forward import llama_forward 
-from vision_forward import image_to_tiles
+from image_preprocessing import image_to_tiles, convert_img_to_rgb
 from llama_types import (
   Text, Tokens, Token, Tokenizer,
   LlamaParams,
 )
 
-# TODO for training DEFINITELY make sure all ops are bfloat16
+
 def inference(
     model_params: LlamaParams,
     context_tokens: Tokens,
@@ -19,6 +19,7 @@ def inference(
   # purpose: faster fine tuning
   # set up inputs 
   tile_resolution = (448, 448)
+  image = convert_img_to_rgb(image)
   image_tiles, aspect_ratio_id = image_to_tiles(image, tile_resolution)
   image_tiles_batch = image_tiles[jnp.newaxis, ...]
   context_tokens_batch = context_tokens[jnp.newaxis, ...]

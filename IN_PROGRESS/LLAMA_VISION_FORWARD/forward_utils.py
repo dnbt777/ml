@@ -9,24 +9,12 @@ from llama_types import (
 )
 
 
-def layer_norm(x):
+def layer_norm(x, weight, bias):
   # ASSUMPTION: layer norm is axis=-1
-  mean = jnp.mean(x, axis=-1, keepdims=True, dtype="float32")
-  var = jnp.mean((x - mean)**2, axis=-1, keepdims=True, dtype="float32")
+  mean = jnp.mean(x, axis=-1, keepdims=True)
+  var = jnp.mean((x - mean)**2, axis=-1, keepdims=True)
   x = (x - mean) / jnp.sqrt(var + 0.00001) # config.json > norm_eps : 0.00001
-  return x
-
-def layer_norm_weight(x, weight):
-  # ASSUMPTION: layer norm is axis=-1
-  x = weight * (x - jnp.mean(x, axis=-1, keepdims=True, dtype="bfloat16")) / (jnp.std(x, axis=-1, keepdims=True, dtype="bfloat16") + 1e-5)
-  return x
-
-
-def layer_norm_bias(x, weight, bias):
-  # ASSUMPTION: layer norm is axis=-1
-  x = weight * (x - jnp.mean(x, axis=-1, keepdims=True, dtype="bfloat16")) / (jnp.std(x, axis=-1, keepdims=True, dtype="bfloat16") + 1e-5)
-  return x + bias
-
+  return weight*x + bias
 
 def RMSnorm_bias(x: TensorBTC, weight: jax.Array, bias: jax.Array) -> TensorBTC:
   rms = jnp.sqrt(jnp.mean(x * x, axis=-1, keepdims=True, dtype="bfloat16") + 1e-6)

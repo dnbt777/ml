@@ -7,24 +7,21 @@ from pathlib import Path
 from vllm import LLM, SamplingParams
 from PIL import Image
 
-import torch
-torch.set_printoptions(precision=8, sci_mode=False)
-
 
 def main():
     # Fixed values
-    model_path = "./Llama"
+    model_path = "./pixtral"
     prompt = "The capital of france is "
     image_path = "./images/image-1.png"
 
     # Load image if it exists
     img_file = Path(image_path)
-    img = Image.open(img_file)#.convert("RGB")
+    img = Image.open(img_file)
     images = [img]
 
     # Load model
     llm = LLM(
-        model="./Llama",
+        model="./pixtral",
         dtype="bfloat16",
         max_model_len=8096,
         max_num_seqs=1,

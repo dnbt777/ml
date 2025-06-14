@@ -5,8 +5,11 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "einops>=0.8.1",
     "jax[cuda12]>=0.5.3",
+    "mistral-common>=1.6.2",
     "numpy>=2.2.4",
+    "opencv-python>=4.11.0.86",
     "pillow>=11.1.0",
     "safetensors>=0.5.3",
 ]

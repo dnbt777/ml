@@ -86,7 +86,7 @@ def bpe_merge(byte_tokens, merge_ranks):
 
 def encode(tokenizer: Tokenizer, text: str) -> Tokens:
     subwords = split_string_with_substrings(text, list(tokenizer.additional_vocab.keys()))
-    print("post split: ", subwords)
+    #print("post split: ", subwords)
 
     preprocess_regex = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+"
     pattern = re.compile(preprocess_regex)
@@ -97,7 +97,7 @@ def encode(tokenizer: Tokenizer, text: str) -> Tokens:
         for subword in subwords
     ]
     subwords = [item for sublist in subwords for item in sublist]
-    print("post regex:", subwords)
+    #print("post regex:", subwords)
 
     subwords = [subword.replace(" ", BPE_SPACE_CHAR) for subword in subwords]
 

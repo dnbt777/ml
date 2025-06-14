@@ -9,6 +9,7 @@ dependencies = [
     "blobfile>=3.0.0",
     "einops>=0.8.1",
     "jax[cuda12]>=0.5.2",
+    "matplotlib>=3.10.3",
     "numpy>=2.2.3",
     "opencv-python>=4.11.0.86",
     "pillow>=11.1.0",
