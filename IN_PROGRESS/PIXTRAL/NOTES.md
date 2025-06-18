@@ -20,21 +20,20 @@ CHECKLIST
 ~~implement parameter loading/classes~~
 ~~implement tokenizer~~
 ~~implement mm_preprocessor~~
-implement transformerblock
+~~implement transformerblock~~
   - ~~feed forward~~
-  - attention
+  - ~~attention~~
   - ~~the rest~~
 implement vision_encoder (img -> embeddings)
   - ~~conv2D~~
   - ~~RMSnorm~~
   - rope2D
-implement embedding(message_tokens, processed_images)
-implement out + decode
-implement inference loop
+~~implement embedding(message_tokens, processed_images)~~
+~~implement out + decode~~
+~~implement inference loop~~
 
 
-testing: do shapes work?
-
+~~testing: do shapes work?~~
 
 
 
