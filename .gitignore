@@ -19,21 +19,40 @@
 !FINISHED/TRANSFORMER/**
 !FINISHED/CNN/**
 !FINISHED/LSTM/**
+## MLP MNIST
 !FINISHED/MLP_MNIST/**
+**/MNIST/
+## pixtral
+!FINISHED/PIXTRAL/**
+**/PIXTRAL/*.ipynb
+**/PIXTRAL/pixtral/
+**/PIXTRAL/mistral/
+**/PIXTRAL/*.sh
+**/PIXTRAL/jax/*.sh
 
 
 # WIP
 !IN_PROGRESS/3BODY_GRPO/**
 !IN_PROGRESS/LLAMA_VISION_FORWARD/**
-!IN_PROGRESS/PIXTRAL/**
+
 
 # Overwrite allow rules
 **/__pycache__/
-**/MNIST/
+
 **/.vscode/
 **/train_runs/
 *.safetensors
 **/.venv/
 *.pub
 **/Llama/
+**/tbug/
+**/tbug_captures/
+**/generate_trace.json
+**/*.safetensors
+**/uv.lock
+uv.lock
+
+
+
+
 

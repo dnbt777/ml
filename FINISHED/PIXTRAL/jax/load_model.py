@@ -5,6 +5,8 @@ from safetensors import safe_open
 from model_types import * 
 from jax.core import ShapedArray # for loading dummy tensors with no data 
 
+import numpy as np
+
 #|=====================================>
 #|_______ load_model.py _______________
 #|
@@ -54,10 +56,20 @@ def load_params(paths: str, dummy: bool = False) -> PixtralModel:
             for path in paths:
                 with safe_open(path, framework="numpy") as f:
                     if key in f.keys():
-                        tensor = f.get_tensor(key).astype("bfloat16")
+                        tensor = f.get_tensor(key).astype(model_dtype)
                         return jax.device_put(tensor)
                         # would be better in c/rust probably
             raise KeyError(f"Tensor with key '{key}' not found")
+        def load_tensors(fmt_key, count):
+            mats = []
+            for path in paths:
+                with safe_open(path, framework="numpy") as f:
+                    for i in range(count):
+                        key = fmt_key.format(i)
+                        mats.append(f.get_tensor(key).astype(model_dtype))
+            host_stack = np.stack(mats).astype(model_dtype)
+            
+            return jax.device_put(jnp.array(mats, dtype=model_dtype))
 
     if dummy:
         model_params = PixtralModel(
@@ -108,15 +120,15 @@ def load_params(paths: str, dummy: bool = False) -> PixtralModel:
               ln_pre_weight=load_tensor(f"vision_encoder.ln_pre.weight"),
               patch_conv_weight=load_tensor(f"vision_encoder.patch_conv.weight"),
               vision_encoder_layers=VisionEncoderLayer(
-                  attention_wk_weight=jnp.array([load_tensor(f"vision_encoder.transformer.layers.{i}.attention.wk.weight") for i in vision_encoder_layers]),
-                  attention_wo_weight=jnp.array([load_tensor(f"vision_encoder.transformer.layers.{i}.attention.wo.weight") for i in vision_encoder_layers]),
-                  attention_wq_weight=jnp.array([load_tensor(f"vision_encoder.transformer.layers.{i}.attention.wq.weight") for i in vision_encoder_layers]),
-                  attention_wv_weight=jnp.array([load_tensor(f"vision_encoder.transformer.layers.{i}.attention.wv.weight") for i in vision_encoder_layers]),
-                  attention_norm_weight=jnp.array([load_tensor(f"vision_encoder.transformer.layers.{i}.attention_norm.weight") for i in vision_encoder_layers]),
-                  feed_forward_w1_weight=jnp.array([load_tensor(f"vision_encoder.transformer.layers.{i}.feed_forward.w1.weight") for i in vision_encoder_layers]),
-                  feed_forward_w2_weight=jnp.array([load_tensor(f"vision_encoder.transformer.layers.{i}.feed_forward.w2.weight") for i in vision_encoder_layers]),
-                  feed_forward_w3_weight=jnp.array([load_tensor(f"vision_encoder.transformer.layers.{i}.feed_forward.w3.weight") for i in vision_encoder_layers]),
-                  ffn_norm_weight=jnp.array([load_tensor(f"vision_encoder.transformer.layers.{i}.ffn_norm.weight") for i in vision_encoder_layers]),
+                  attention_wk_weight=load_tensors("vision_encoder.transformer.layers.{}.attention.wk.weight", count=len(vision_encoder_layers)),
+                  attention_wo_weight=load_tensors("vision_encoder.transformer.layers.{}.attention.wo.weight", count=len(vision_encoder_layers)),
+                  attention_wq_weight=load_tensors("vision_encoder.transformer.layers.{}.attention.wq.weight", count=len(vision_encoder_layers)),
+                  attention_wv_weight=load_tensors("vision_encoder.transformer.layers.{}.attention.wv.weight", count=len(vision_encoder_layers)),
+                  attention_norm_weight=load_tensors("vision_encoder.transformer.layers.{}.attention_norm.weight", count=len(vision_encoder_layers)),
+                  feed_forward_w1_weight=load_tensors("vision_encoder.transformer.layers.{}.feed_forward.w1.weight", count=len(vision_encoder_layers)),
+                  feed_forward_w2_weight=load_tensors("vision_encoder.transformer.layers.{}.feed_forward.w2.weight", count=len(vision_encoder_layers)),
+                  feed_forward_w3_weight=load_tensors("vision_encoder.transformer.layers.{}.feed_forward.w3.weight", count=len(vision_encoder_layers)),
+                  ffn_norm_weight=load_tensors("vision_encoder.transformer.layers.{}.ffn_norm.weight", count=len(vision_encoder_layers)),
               )
           ),
           vision_language_adapter=VisionLanguageAdapter(
@@ -127,17 +139,18 @@ def load_params(paths: str, dummy: bool = False) -> PixtralModel:
           ),
           transformer=Transformer(
               transformer_layers=TransformerLayer(
-                  attention_wk_weight=jnp.array([load_tensor(f"layers.{i}.attention.wk.weight") for i in transformer_layers]),
-                  attention_wo_weight=jnp.array([load_tensor(f"layers.{i}.attention.wo.weight") for i in transformer_layers]),
-                  attention_wq_weight=jnp.array([load_tensor(f"layers.{i}.attention.wq.weight") for i in transformer_layers]),
-                  attention_wv_weight=jnp.array([load_tensor(f"layers.{i}.attention.wv.weight") for i in transformer_layers]),
-                  attention_norm_weight=jnp.array([load_tensor(f"layers.{i}.attention_norm.weight") for i in transformer_layers]),
-                  feed_forward_w1_weight=jnp.array([load_tensor(f"layers.{i}.feed_forward.w1.weight") for i in transformer_layers]),
-                  feed_forward_w2_weight=jnp.array([load_tensor(f"layers.{i}.feed_forward.w2.weight") for i in transformer_layers]),
-                  feed_forward_w3_weight=jnp.array([load_tensor(f"layers.{i}.feed_forward.w3.weight") for i in transformer_layers]),
-                  ffn_norm_weight=jnp.array([load_tensor(f"layers.{i}.ffn_norm.weight") for i in transformer_layers]),
+                  attention_wk_weight=load_tensors("layers.{}.attention.wk.weight", count=len(transformer_layers)),
+                  attention_wo_weight=load_tensors("layers.{}.attention.wo.weight", count=len(transformer_layers)),
+                  attention_wq_weight=load_tensors("layers.{}.attention.wq.weight", count=len(transformer_layers)),
+                  attention_wv_weight=load_tensors("layers.{}.attention.wv.weight", count=len(transformer_layers)),
+                  attention_norm_weight=load_tensors("layers.{}.attention_norm.weight", count=len(transformer_layers)),
+                  feed_forward_w1_weight=load_tensors("layers.{}.feed_forward.w1.weight", count=len(transformer_layers)),
+                  feed_forward_w2_weight=load_tensors("layers.{}.feed_forward.w2.weight", count=len(transformer_layers)),
+                  feed_forward_w3_weight=load_tensors("layers.{}.feed_forward.w3.weight", count=len(transformer_layers)),
+                  ffn_norm_weight=load_tensors("layers.{}.ffn_norm.weight", count=len(transformer_layers)),
               )
           ),
         )
+
 
     return model_params
