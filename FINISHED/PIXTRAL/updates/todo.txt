@@ -1,8 +1,0 @@
-Optimize
-Refactor
-
-Implement batching
-
-Implement multiple images
-    And blockdiagonalmask in img attention
-
