@@ -17,10 +17,18 @@ from typing import NamedTuple, List
 #|===============================================================>>>
 
 
-
 #######
-## vision encoder
 
+## kvcache
+# contains a list of arrays corresponding to each layer
+# only used in lang forward
+class KVCache(NamedTuple):
+    K: List[jax.Array] # (xfmr layer, B, Hk, r, T, d)
+    V: List[jax.Array]
+
+
+
+## vision encoder
 class VisionEncoderLayer(NamedTuple):
   attention_wk_weight: jax.Array # (1024, 1024)
   attention_wo_weight: jax.Array # (1024, 1024)
@@ -41,7 +49,6 @@ class VisionEncoder(NamedTuple):
 
 #######
 ## vision-language adapter
-
 class VisionLanguageAdapter(NamedTuple):
   w_in_bias: jax.Array     # (5120,)
   w_in_weight: jax.Array   # (5120, 1024)
@@ -52,7 +59,6 @@ class VisionLanguageAdapter(NamedTuple):
 
 #######
 ## transformer
-
 class TransformerLayer(NamedTuple):
   attention_wk_weight: jax.Array # ()
   attention_wo_weight: jax.Array # ()
@@ -71,7 +77,6 @@ class Transformer(NamedTuple):
 
 #######
 ## pixtral
-
 class PixtralModel(NamedTuple):
   norm_weight: jax.Array # (5120,)
   output_weight: jax.Array # (131072, 5120)
@@ -83,6 +88,6 @@ class PixtralModel(NamedTuple):
 
 #######
 ## additional types
-
 from typing import TypeAlias, Union
 TransformerBlock: TypeAlias = Union[TransformerLayer, VisionEncoderLayer]
+

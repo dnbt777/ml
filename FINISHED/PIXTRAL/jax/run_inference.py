@@ -5,17 +5,18 @@ import jax.random as jrand
 
 ## load params
 from load_model import load_params
-from forward import encode, decode
+from forward_common import encode, decode, tokenize_messages_dict
 
+# logging
+import time
+
+## load params
+load_start = time.time()
 
 paths = ['../pixtral/consolidated.safetensors']
 pixtral_params = load_params(paths, dummy=False)
 
-debug = False
-jax.config.update("jax_enable_x64", True)
-#jax.config.update("jax_default_dtype_bits", "32")
-if debug:
-    jax.config.update("jax_disable_jit", True)
+print(f"Loaded params in {time.time() - load_start:.2f}s")
 
 
 ## set up inference prompt
@@ -42,13 +43,14 @@ messages = [
   },
 ]
 temp = 0.0
-generate_tokens = 32
+generate_tokens = 128
 
 ## do inference
-from forward import inference, tokenize_messages_dict
+from forward_prefill import inference_prefill
+from forward_cached import inference_cached
 
 prompt_tokens, images, image_start_indices = tokenize_messages_dict(messages)
-print(len(prompt_tokens), "input prompt text token len")
+print(f"input tokens: {len(prompt_tokens)}")
 
 completion = ""
 tokens = prompt_tokens
@@ -56,21 +58,39 @@ tokens = prompt_tokens
 # pad tokens to make shape constant
 max_tokens = len(tokens) + generate_tokens
 
-import time
-
+# do inference
 for i in range(generate_tokens):
     if i == 0:
-        start = time.time()
-    # pad tokens to constant size
-    context_tokens = len(tokens)
-    padding_token_count = max_tokens - context_tokens
-    padding_token_id = 11 # https://github.com/mistralai/mistral-common/issues/105#issuecomment-2997200779
-    padding_tokens = jnp.array([padding_token_id for _ in range(padding_token_count)]) # single batch for now
-    padded_tokens = jnp.concatenate([padding_tokens, jnp.array(tokens)])
-
-    # do inference
-    shifted_sequence = inference(key, pixtral_params, padded_tokens, images, image_start_indices)
-    next_token = shifted_sequence[0, -1]
+        prefill_start = time.time()
+        ### PREFILL
+        next_token_batch, kvcache = inference_prefill(key, pixtral_params, tokens, images, image_start_indices)
+        next_token = next_token_batch[0]
+        # pad kvcache to max token size (jax jit will require constant shapes)
+        blocks, B, Hk, r, T, d = kvcache.K.shape
+        initial_token_count = T-1
+        max_tokens = initial_token_count + generate_tokens
+        padding_tokens = (generate_tokens - 1)
+        padding_dims = [(0, 0), (0, 0),(0, 0),(0, 0),(0, padding_tokens),(0, 0)] # pad on T dim: KV is (xfmr_blocks, B, Hk, r=1, T, d)
+        kvcache = kvcache._replace(
+            K = jnp.pad(kvcache.K, padding_dims, mode="constant", constant_values=0),
+            V = jnp.pad(kvcache.V, padding_dims, mode="constant", constant_values=0),
+        )
+        next_token_index = T
+        # log prefill time
+        print(f"prefill duration: {time.time() - prefill_start:.2f}")
+    else:
+        if i == 1:
+            jit_start = time.time()
+        elif i == 2:
+            token_generation_start = time.time()
+        ### INFERENCE WITH KVCACHE
+        next_token_batch, kvcache = inference_cached(key, pixtral_params, next_token_batch, kvcache, next_token_index)
+        next_token_batch = next_token_batch[0] # double batched for some reason (bug)
+        next_token = next_token_batch[0]
+        next_token_index += 1
+        if i == 1:
+            jit_end = time.time()
+    # print
     if i == 0:
         print("Human:\n",prompt,"\n\nAssistant:")
     next_token_chars = decode([next_token])
@@ -80,6 +100,10 @@ for i in range(generate_tokens):
 
 ## print result
 print("\n\n\ncompletion: ", completion)
-print("tok/sec", (generate_tokens - 1) / (time.time() - start))
+print(f"jit duration:{jit_end - jit_start:.2f}")
+print("tokens generated: ", generate_tokens)
+duration = time.time() - token_generation_start
+print("generation duration", duration)
+print("tok/sec", (generate_tokens - 2)/duration) # dont tokens generated during prefill or jit
 
 

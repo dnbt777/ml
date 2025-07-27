@@ -1,0 +1,11 @@
+Optimize
+    get rid of the many casts
+    ddiscarddd everythig not needde foor final token
+    dont recompute rope freqs (oh wait i dont)
+Refactor
+
+Implement batching
+
+Implement multiple images
+    And blockdiagonalmask in img attention
+

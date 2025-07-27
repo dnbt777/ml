@@ -133,7 +133,7 @@ def pixtral_attention(block_params: TransformerBlock, hidden_state_BTC, freqs, q
   Hk=kv_heads
   Hq=query_heads
   repeats = Hq // Hk 
-  Q = rearrange(Q, "B T (Hk r d) -> B Hk r T d", Hk=Hk, r=repeats, d=head_dim) # not sure if repeats is needed in pixtral
+  Q = rearrange(Q, "B T (Hk r d) -> B Hk r T d", Hk=Hk, r=repeats, d=head_dim)
   K = rearrange(K, "B T (Hk d) -> B Hk T d", Hk=Hk, d=head_dim)
   V = rearrange(V, "B T (Hk d) -> B Hk T d", Hk=Hk, d=head_dim)
 
@@ -144,11 +144,10 @@ def pixtral_attention(block_params: TransformerBlock, hidden_state_BTC, freqs, q
   K = K[:, :, None, :, :] # broadcast over r
   V = V[:, :, None, :, :] # broadcast over r
 
-  # repeat kv to match query (imo, this is a waste, and there should be an op that does gqa attn w/o duping memory)
+  # repeat kv to match query (optimization: view or broadcast instead of repeat)
 
   # uses xformers memory efficient attention
   # https://github.com/facebookresearch/xformers/blob/e1a17a9235206dc7cd5999ce65ce79ff3cd4665d/xformers/ops/fmha/__init__.py#L194
-  # equivalent to normal attention. no sliding window ig? yaaay
   #scale = jax.lax.rsqrt(Q.shape[-1]) # rqrt does not accept int64
   scale = 1.0 / jnp.sqrt(Q.shape[-1])
   Q = jnp.float32(Q * scale)
@@ -389,18 +388,16 @@ def mm_forward(model_params: PixtralModel, message_tokens, processed_images, ima
   hidden_state_BTC = embedding(model_params, message_tokens, processed_images, image_start_indices)[jnp.newaxis, :] # fake batch for now
 
   B, T, C = hidden_state_BTC.shape
-  # in GQA there are more queries than keys/values
-  # therefore the channel is larger
-  # so the max dim is .. wait..
   head_dim = 128 # params.json
   max_pos, d = T, head_dim
   freqs = precompute_rope_freqs_1d(max_pos, d) # mistral does rope after splitting k and q into gqa heads. q and k are split into the same channel size per head
 
   # attention
   # loop through attention layers
-  Hq = 32
-  Hk = 8
+  Hq = 32 # params.json
+  Hk = 8 # params.json
   # head dim defined above - it's used to calculate rope1d frequencies
+  # scan compiles faster
   def scanf(hidden_state, block_params):
     hidden_state = transformer_block(block_params, hidden_state, freqs, Hq, Hk, head_dim).astype(jnp.bfloat16)#, kvcache)
     return hidden_state, None
@@ -411,16 +408,14 @@ def mm_forward(model_params: PixtralModel, message_tokens, processed_images, ima
 
   hidden_state_BTC = hidden_state_BTC @ model_params.output_weight.T # lm head
   return hidden_state_BTC
-    
+
 
 @jax.jit
 def inference(key, pixtral_params, tokens, images, image_start_indices) -> str:
   # get logits
   next_token_logits = mm_forward(pixtral_params, tokens, images, image_start_indices) # B, T, C
-
   # random sample
   next_token = jrand.categorical(key, next_token_logits, axis=-1) # (B,T)
   # return
   return next_token # (B,T)
-
 

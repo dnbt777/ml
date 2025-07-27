@@ -1,0 +1,16 @@
+initial: 40sec/tok
+after jit/fixed shape: 2.5sec/tok
+
+
+
+
+
+mistral:
+
+
+
+
+
+
+param loading times:
+initial: 900s
