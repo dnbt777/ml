@@ -11,7 +11,7 @@ from forward import encode, decode
 paths = ['../pixtral/consolidated.safetensors']
 pixtral_params = load_params(paths, dummy=False)
 
-debug = True
+debug = False
 jax.config.update("jax_enable_x64", True)
 #jax.config.update("jax_default_dtype_bits", "32")
 if debug:
@@ -42,7 +42,7 @@ messages = [
   },
 ]
 temp = 0.0
-max_tokens = 32
+generate_tokens = 32
 
 ## do inference
 from forward import inference, tokenize_messages_dict
@@ -53,16 +53,33 @@ print(len(prompt_tokens), "input prompt text token len")
 completion = ""
 tokens = prompt_tokens
 
-for i in range(max_tokens):
-    next_token = inference(key, pixtral_params, tokens, images, image_start_indices)
+# pad tokens to make shape constant
+max_tokens = len(tokens) + generate_tokens
+
+import time
+
+for i in range(generate_tokens):
+    if i == 0:
+        start = time.time()
+    # pad tokens to constant size
+    context_tokens = len(tokens)
+    padding_token_count = max_tokens - context_tokens
+    padding_token_id = 11 # https://github.com/mistralai/mistral-common/issues/105#issuecomment-2997200779
+    padding_tokens = jnp.array([padding_token_id for _ in range(padding_token_count)]) # single batch for now
+    padded_tokens = jnp.concatenate([padding_tokens, jnp.array(tokens)])
+
+    # do inference
+    shifted_sequence = inference(key, pixtral_params, padded_tokens, images, image_start_indices)
+    next_token = shifted_sequence[0, -1]
     if i == 0:
         print("Human:\n",prompt,"\n\nAssistant:")
-    next_token_chars = decode(next_token)
-    completion += next_token_chars
-    tokens = prompt_tokens + encode(completion, add_special=False)
+    next_token_chars = decode([next_token])
     print(next_token_chars, end="", flush=True)
+    completion += next_token_chars
+    tokens.append(int(next_token))
 
 ## print result
 print("\n\n\ncompletion: ", completion)
+print("tok/sec", (generate_tokens - 1) / (time.time() - start))
 
 

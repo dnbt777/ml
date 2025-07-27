@@ -4,20 +4,12 @@ import numpy as np
 from typing import List
 from model_types import *
 from einops import rearrange
+import jax.random as jrand
+from functools import partial
 
 # mm_preprocessor :: [Image] -> [image_tiles or whatever]
 from PIL import Image
 import cv2
-
-
-# debug
-import tbug.tbug as tbug
-
-debug = False
-if not debug:
-    donothing = lambda *args, **kwargs: None
-    tbug.capture = donothing
-    #print = donothing
 
 
 def convert_to_rgb(image: Image) -> Image:
@@ -32,7 +24,6 @@ def process_image(image: Image):
   ## get embeddings of img
   # convert to rgb
   image = convert_to_rgb(image)
-
   # resize img
   max_image_size = 1024 # from params.json
   patch_size = 16 # from params.json
@@ -58,8 +49,6 @@ def process_image(image: Image):
   image = jnp.array(image, dtype=jnp.float32) # explicitly convert to jnp array w dtype float32. when x64 is enabled, implicit => float64 and breaks this
   image = jnp.transpose(image, (2, 0, 1))
 
-  ## get tokens
-
   # create tokens
   img_token_id = 10 # from params.json
   img_break_id = 12 # from params.json
@@ -71,23 +60,9 @@ def process_image(image: Image):
   return (image_tokens, image.astype(jnp.bfloat16))
 
 
-
-# tokenizer :: [string] -> [[token]]
-#  - preprocess
-#  - tokenize
 # https://docs.mistral.ai/guides/tokenization/
+# Just use mistral's tokenizer for now
 import json
-#def load_tokenizer(path: str) -> dict:
-#  with open(path, 'r') as file:
-#    tokenizer_config = json.load(file)
-#  return tokenizer_config
-#
-#def tokenizer():
- # # loads tekken (mistrals tiktoken based bpe)
- # load_tokenizer("./pixtral/tekken.json")
-#
-#  pass # return tokens, image_idxs 
-# for now just use mistrals. come back to this later
 from mistral_common.tokens.tokenizers.tekken import Tekkenizer 
 tok = Tekkenizer.from_file("../pixtral/tekken.json")
 
@@ -97,10 +72,54 @@ def encode(string, add_special=True):
 def decode(string):
   return tok.decode(string)
 
+#inference :: [Union(Image, string)] -> [string]
+# example message format: https://docs.vllm.ai/en/v0.8.0/getting_started/examples/pixtral.html
+def tokenize_messages_dict(messages, add_special=False):
+  # token IDS
+  START = -1 # <s> # placeholder values for now
+  INS_START = 0 # [INS]
+  INS_END = 1 # [/INS]
+
+  tokens = []
+  #tokens = [START]
+  images = []
+  image_start_indices = []
+  for message in messages:
+    if message["role"] == "user":
+      #tokens.append(INS_START)
+      if type(message["content"]) == str:
+        tokens = tokens + encode(message["content"], add_special=add_special)
+      else:
+        for content in message["content"]:
+          if content["type"] == "text":
+            tokens = tokens + encode(content["text"], add_special=add_special)
+          elif content["type"] == "image_url":
+            image_start_index = len(tokens)
+            image_start_indices.append(image_start_index)
+            source = content["image_url"]["url"]
+            if ('https://' in source) or ('http://' in source):
+              pass # requests.get
+            elif 'data:image' in source:
+              pass # base64
+            else:
+              # file
+              image = Image.open(source)
+              image_tokens, processed_image = process_image(image)
+              tokens = tokens + image_tokens
+              images.append(processed_image)
+          else:
+            raise NameError(f"Error processing messages. Unknown content type {content["type"]}")
+      #tokens.append(INS_END)
+    elif message["role"] == "assistant": # assistant?
+      tokens = tokens + encode(message["content"])
+    else:
+      raise NameError(f"Error processing messages. Unknown role {message["role"]}")
+    
+  return tokens, images, image_start_indices
 
 
-def pixtral_attention(block_params: TransformerBlock, hidden_state_BTC, freqs, query_heads, kv_heads, head_dim, capturenum=None):
-  # scaled dot prod attention
+
+def pixtral_attention(block_params: TransformerBlock, hidden_state_BTC, freqs, query_heads, kv_heads, head_dim):
   # compute qkv
   hidden_state_BTC = hidden_state_BTC.astype(jnp.bfloat16)
   Q = hidden_state_BTC @ block_params.attention_wq_weight.T
@@ -108,7 +127,7 @@ def pixtral_attention(block_params: TransformerBlock, hidden_state_BTC, freqs, q
   V = hidden_state_BTC @ block_params.attention_wv_weight.T
 
   # kv cache optional ig
-
+  # for now dont use this. wont be used in training I dont think
 
   # split into heads (GQA)
   Hk=kv_heads
@@ -118,16 +137,9 @@ def pixtral_attention(block_params: TransformerBlock, hidden_state_BTC, freqs, q
   K = rearrange(K, "B T (Hk d) -> B Hk T d", Hk=Hk, d=head_dim)
   V = rearrange(V, "B T (Hk d) -> B Hk T d", Hk=Hk, d=head_dim)
 
-  if not (capturenum is None):
-      tbug.capture(rearrange(Q, "B Hk r T d -> B r T Hk d")[0][0], f"vision_encoder.layer{capturenum:02d}_attn_Q", project="jax")
-
-  
   # rope1D AFTER splitting into GQA heads
   Q = apply_rope(Q, freqs).astype(jnp.float32)
   K = apply_rope(K, freqs).astype(jnp.float32) # both have the same head dim
-
-  if not (capturenum is None):
-      tbug.capture(rearrange(Q, "B Hk r T d -> B r T Hk d")[0][0], f"vision_encoder.layer{capturenum:02d}_attn_ropedQ", project="jax")
 
   K = K[:, :, None, :, :] # broadcast over r
   V = V[:, :, None, :, :] # broadcast over r
@@ -160,23 +172,13 @@ def feed_forward(block_params: TransformerBlock, hidden_state_BTC: jax.Array) ->
 
 
 # https://github.com/mistralai/mistral-inference/blob/6eb35510403825cfb430b0004443053e8c4b70dc/src/mistral_inference/transformer_layers.py#L123
-def transformer_block(block_params: TransformerBlock, hidden_state_BTC: jax.Array, freqs_1d, query_heads, kv_heads, head_dim, capturenum=None) -> jax.Array:
+def transformer_block(block_params: TransformerBlock, hidden_state_BTC: jax.Array, freqs_1d, query_heads, kv_heads, head_dim) -> jax.Array:
   # same block for vision encoder AND transformer
-  residual_BTC = RMSnorm(hidden_state_BTC, block_params.attention_norm_weight, jnp.zeros_like(hidden_state_BTC)) ## attention norm
-  if not (capturenum is None):
-      tbug.capture(residual_BTC[0], f"vision_encoder.layer{capturenum:02d}_postrms1", project="jax")
-      residual_BTC = pixtral_attention(block_params, residual_BTC, freqs_1d, query_heads, kv_heads, head_dim, capturenum=capturenum)
-  else:
-      residual_BTC = pixtral_attention(block_params, residual_BTC, freqs_1d, query_heads, kv_heads, head_dim)
-  if not (capturenum is None):
-      tbug.capture(residual_BTC[0], f"vision_encoder.layer{capturenum:02d}_postattn", project="jax")
+  residual_BTC = RMSnorm(hidden_state_BTC, block_params.attention_norm_weight) ## attention norm
+  residual_BTC = pixtral_attention(block_params, residual_BTC, freqs_1d, query_heads, kv_heads, head_dim)
   hidden_state_BTC = hidden_state_BTC + residual_BTC
-  residual_BTC = RMSnorm(hidden_state_BTC, block_params.ffn_norm_weight, jnp.zeros_like(hidden_state_BTC)) ## ff norm
-  if not (capturenum is None):
-      tbug.capture(residual_BTC[0], f"vision_encoder.layer{capturenum:02d}_postrms2", project="jax")
+  residual_BTC = RMSnorm(hidden_state_BTC, block_params.ffn_norm_weight) ## ff norm
   residual_BTC = feed_forward(block_params, residual_BTC)
-  if not (capturenum is None):
-      tbug.capture(residual_BTC[0], f"vision_encoder.layer{capturenum:02d}_postffout", project="jax")
   hidden_state_BTC = hidden_state_BTC + residual_BTC
   return hidden_state_BTC
 
@@ -196,18 +198,16 @@ def conv2d(model_params: PixtralModel, image_CHW) -> jax.Array:
     return patch_embeddings_HWO.astype(jnp.bfloat16)
 
 
-def RMSnorm(hidden_state, weight, bias):
+def RMSnorm(hidden_state, weight):
   eps = 1e-5
   hidden_state = hidden_state.astype(jnp.float32)
   weight = weight.astype(jnp.float32)
-  bias = bias.astype(jnp.float32)
   squared = jax.lax.pow(hidden_state, 2)
   mean = (jnp.mean(squared, axis=-1, keepdims=True) + jnp.float64(eps)).astype(jnp.float32) # float, double -> ?
   rsqrt = jax.lax.rsqrt(mean.astype(jnp.float32)) # float, float -> ?
   hidden_state = jnp.multiply(hidden_state, rsqrt) # float, float -> 
   hidden_state = hidden_state.astype(jnp.bfloat16)
   hidden_state = jnp.multiply(hidden_state, weight) # bfloat16, bfloat16 -> ?
-  # hidden_state = hidden_state + bias # not actually used
   return hidden_state.astype(jnp.bfloat16)
 
 
@@ -276,60 +276,32 @@ def precompute_rope_freqs_2d(max_h, max_w, d):
     return freqs_2d.astype(jnp.complex64) # explicit
 
 
-"""is this used??
-def rope2d(hidden_state_BTC, freqs_2d):
-    rope_theta = 10_000 # params.json
-    B, T, C = hidden_state_BTC.shape
-    d = C
-    _, H, W, _ = freqs_2d.shape
-    hidden_state_pairs = jnp.reshape(hidden_state_BTC, (B, T, d//2, 2))
-    re, im = hidden_state_pairs[..., 0], hidden_state_pairs[..., 1] # b, H, W, d//2
-    # calculate rotations
-        # could just be done with one mul (of both complex nums) but whatever
-    cos, sin = jnp.real(freqs_2d).astype(jnp.float32), jnp.imag(freqs_2d).astype(jnp.float32) # 1, H, W, d//2
-    # flatten cos and sin grids
-    cos, sin = jnp.reshape(cos, (1, H*W, d//2)), jnp.reshape(sin, (1, H*W, d//2))
-    # do rotations
-    re_rot = re*cos - im*sin
-    im_rot = im*cos + re*sin
-    
-    hidden_state_rot2d = jnp.concatenate([re_rot[..., None], im_rot[..., None]], axis=-1)
-    hidden_state_rot2d = jnp.reshape(hidden_state_rot2d, (B, T, C)) # ..., d//2, 2 => ..., d 
-    return hidden_state_rot2d
-"""
-
-
 def vision_language_adapter(vla_params: VisionLanguageAdapter, hidden_state_TC):
   hidden_state_TC = jax.nn.gelu(hidden_state_TC @ vla_params.w_in_weight.T + vla_params.w_in_bias)
   hidden_state_TC = hidden_state_TC @ vla_params.w_out_weight.T + vla_params.w_out_bias
   return hidden_state_TC
 
 
-
 # https://github.com/mistralai/mistral-inference/blob/main/src/mistral_inference/vision_encoder.py
 def vision_encoder(model_params: PixtralModel, processed_image):
-  tbug.capture(processed_image, name="vision_enc.processed_image", project="jax")
   # conv2d on image 
   patch_embeddings_CHW = conv2d(model_params, processed_image)[0]
-  tbug.capture(patch_embeddings_CHW, name="vision_enc.post_conv.first_image", project="jax")
-  
+
   C, H, W = patch_embeddings_CHW.shape
   #rope2d_positions = position_meshgrid(patch_embeddings_CHW.shape[1], patch_embeddings_CHW.shape[2])
   num_attention_heads = 16 # params.json
   hidden_dim = C
   head_dim = hidden_dim // num_attention_heads
   freqs_2d = precompute_rope_freqs_2d(H, W, head_dim) # in the future - precompute with max H and W ONCE, and adjust func to deal with any H W array
-  tbug.capture(freqs_2d[0], name="vision_encoder.rope_freqs2d", project="jax") # capture pre-flattened (like mistral)
+
   freqs_2d = rearrange(freqs_2d, "B H W c -> B (H W) c") # flatten
   
-    
   # flatten patch embeddings
   # (C, H, W) => (P, C)
   flattened_patch_embeddings_PC = rearrange(patch_embeddings_CHW, "C H W -> (H W) C")
 
   # ln pre (RMSnorm)
-  flattened_patch_embeddings_PC = RMSnorm(flattened_patch_embeddings_PC, model_params.vision_encoder.ln_pre_weight, jnp.zeros_like(flattened_patch_embeddings_PC))
-  tbug.capture(flattened_patch_embeddings_PC, name="vision_enc.post_ln_pre.patch_embeds", project="jax")
+  flattened_patch_embeddings_PC = RMSnorm(flattened_patch_embeddings_PC, model_params.vision_encoder.ln_pre_weight)
 
   # block diagonal mask
   # see vision_encoder.py
@@ -344,8 +316,7 @@ def vision_encoder(model_params: PixtralModel, processed_image):
   for patch_sequence in patch_sequences:
       block_diagonal_mask.at[left_idx:patch_sequence, left_idx:patch_sequence].set(1.0)
       left_idx = left_idx + patch_sequence
-  tbug.capture(block_diagonal_mask, name="vision_encoder.blockdiagonalmask", project="jax")
-    
+
   # vision transformer blocks
   # loop through attention layers
   hidden_state_BTC = flattened_patch_embeddings_PC[jnp.newaxis, ...]
@@ -354,27 +325,16 @@ def vision_encoder(model_params: PixtralModel, processed_image):
   hidden_dim = hidden_state_BTC.shape[-1]
   head_dim = hidden_dim // num_attention_heads
   #freqs_1d = precompute_rope_freqs_1d(T, head_dim) # in pixtral, rope is done after viewing q and k broken into heads
-  #tbug.capture(freqs_1d[0], name="vision_encoder.rope_freqs1d", project="jax") # this is wrong!!! 1d is for the text transformer. do rope1d with the 2d freqs
-  def scanf(data, block_params):
-    hidden_state, i = data
-    if i < 3:
-        tbug.capture(hidden_state[0], f"vision_transformer.layer{i:02d}_input", project="jax")
-        hidden_state = transformer_block(block_params, hidden_state, freqs_2d, num_attention_heads, num_attention_heads, head_dim, capturenum=i)
-    else:
-        hidden_state = transformer_block(block_params, hidden_state, freqs_2d, num_attention_heads, num_attention_heads, head_dim)
-    i = i + 1
-    data = hidden_state, i
-    return data, None
-  data_in = hidden_state_BTC, 0
-  data_out, _ = jax.lax.scan(scanf, data_in, model_params.vision_encoder.vision_encoder_layers)
-  hidden_state_BTC, _ = data_out
+
+  def scanf(hidden_state, block_params):
+    hidden_state = transformer_block(block_params, hidden_state, freqs_2d, num_attention_heads, num_attention_heads, head_dim)
+    return hidden_state, None
+  hidden_state_BTC, _ = jax.lax.scan(scanf, hidden_state_BTC, model_params.vision_encoder.vision_encoder_layers)
   hidden_state_TC = hidden_state_BTC[0] # un-batch fake batch
-  tbug.capture(hidden_state_TC, name="post_vision_encoder.hidden_state", project="jax")
 
   # call vision language adapter
   hidden_state_TC = vision_language_adapter(model_params.vision_language_adapter, hidden_state_TC)
-  tbug.capture(hidden_state_TC, name="post_vl_adapter.hidden_state", project="jax")
-  
+
   return hidden_state_TC, H, W, hidden_state_TC.shape[-1]
 
 
@@ -383,13 +343,11 @@ def embedding(model_params: PixtralModel, message_tokens, processed_images, imag
   # already the exact length needed for images. contains img tokens including img_br and img_end
   message_tokens = jnp.array(message_tokens, dtype=int)
   embeddings = jnp.take(model_params.tok_embeddings_weight, message_tokens, axis=0) # one-hot but faster ig
-  tbug.capture(embeddings, name="combined_embeddings.text_features", project="jax")
-  
+
   # get image embeddings
   # (call vision encoder) 
   image_embeddings = [vision_encoder(model_params, processed_image) for processed_image in processed_images]  # N, H, W, C
-  tbug.capture(image_embeddings[0][0], name="combined_embeddings.image_features", project="jax")
-  
+
   # replace img tokens with images
   for image_data, start_idx in zip(image_embeddings, image_start_indices):
     image_embedding_TC, H, W, C = image_data 
@@ -411,7 +369,7 @@ def embedding(model_params: PixtralModel, message_tokens, processed_images, imag
       image_embedding_TC.astype(jnp.bfloat16), # source # bfloat16 just for now
       (start_idx, 0) # start overwrite index
     )
-  tbug.capture(embeddings, name="combined_embeddings.hidden_state", project="jax")
+
   return embeddings
 
 
@@ -423,14 +381,12 @@ def layernorm(hidden_state_BTC, weight, bias):
   hidden_state_BTC = hidden_state_BTC*weight # element-wise
   hidden_state_BTC = hidden_state_BTC + bias # element-wise
   return hidden_state_BTC
-  
 
 
 @jax.jit
 def mm_forward(model_params: PixtralModel, message_tokens, processed_images, image_start_indices) -> jax.Array:
   # get embeddings
   hidden_state_BTC = embedding(model_params, message_tokens, processed_images, image_start_indices)[jnp.newaxis, :] # fake batch for now
-  tbug.capture(hidden_state_BTC, name="post_embedding.hidden_state", project="jax")
 
   B, T, C = hidden_state_BTC.shape
   # in GQA there are more queries than keys/values
@@ -439,7 +395,6 @@ def mm_forward(model_params: PixtralModel, message_tokens, processed_images, ima
   head_dim = 128 # params.json
   max_pos, d = T, head_dim
   freqs = precompute_rope_freqs_1d(max_pos, d) # mistral does rope after splitting k and q into gqa heads. q and k are split into the same channel size per head
-  tbug.capture(freqs, name="post_embedding.freqs1d", project="jax")
 
   # attention
   # loop through attention layers
@@ -451,73 +406,21 @@ def mm_forward(model_params: PixtralModel, message_tokens, processed_images, ima
     return hidden_state, None
   
   hidden_state_BTC, _ = jax.lax.scan(scanf, hidden_state_BTC, model_params.transformer.transformer_layers)
-    # ffw - gelu gated idk
-  tbug.capture(hidden_state_BTC[:, -1, :], name="post_lang_transformer.hidden_state", project="jax")
-  
+
   hidden_state_BTC = layernorm(hidden_state_BTC, model_params.norm_weight, jnp.zeros_like(hidden_state_BTC))
-  tbug.capture(hidden_state_BTC[:, -1, :], name="post_lang_transformer_ln.hidden_state", project="jax")
+
   hidden_state_BTC = hidden_state_BTC @ model_params.output_weight.T # lm head
   return hidden_state_BTC
-
-
-#inference :: [Union(Image, string)] -> [string]
-# example message format: https://docs.vllm.ai/en/v0.8.0/getting_started/examples/pixtral.html
-import jax.random as jrand
-from functools import partial
-
-def tokenize_messages_dict(messages, add_special=False):
-  # token IDS
-  START = -1 # <s> # placeholder values for now
-  INS_START = 0 # [INS]
-  INS_END = 1 # [/INS]
-
-  tokens = []
-  #tokens = [START]
-  images = []
-  image_start_indices = []
-  for message in messages:
-    if message["role"] == "user":
-      #tokens.append(INS_START)
-      if type(message["content"]) == str:
-        tokens = tokens + encode(message["content"], add_special=add_special)
-      else:
-        for content in message["content"]:
-          if content["type"] == "text":
-            tokens = tokens + encode(content["text"], add_special=add_special)
-          elif content["type"] == "image_url":
-            image_start_index = len(tokens)
-            image_start_indices.append(image_start_index)
-            source = content["image_url"]["url"]
-            if ('https://' in source) or ('http://' in source):
-              pass # requests.get
-            elif 'data:image' in source:
-              pass # base64
-            else:
-              # file
-              image = Image.open(source)
-              image_tokens, processed_image = process_image(image)
-              tokens = tokens + image_tokens
-              images.append(processed_image)
-          else:
-            raise NameError(f"Error processing messages. Unknown content type {content["type"]}")
-      #tokens.append(INS_END)
-    elif message["role"] == "assistant": # assistant?
-      tokens = tokens + encode(message["content"])
-    else:
-      raise NameError(f"Error processing messages. Unknown role {message["role"]}")
-    
-  return tokens, images, image_start_indices
     
 
-
-
+@jax.jit
 def inference(key, pixtral_params, tokens, images, image_start_indices) -> str:
   # get logits
-  next_token_logits = mm_forward(pixtral_params, tokens, images, image_start_indices)[:, -1, :] # (B, T, vocab) => (B, 1, vocab)
-  tbug.capture(next_token_logits, name="post_forward.logits", project="jax")
+  next_token_logits = mm_forward(pixtral_params, tokens, images, image_start_indices) # B, T, C
+
   # random sample
-  next_token = jrand.categorical(key, next_token_logits, axis=-1) # (B,)
+  next_token = jrand.categorical(key, next_token_logits, axis=-1) # (B,T)
   # return
-  return next_token # (B,)
+  return next_token # (B,T)
 
 
