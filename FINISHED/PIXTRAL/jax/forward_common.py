@@ -76,17 +76,18 @@ def decode(string):
 # example message format: https://docs.vllm.ai/en/v0.8.0/getting_started/examples/pixtral.html
 def tokenize_messages_dict(messages, add_special=False):
   # token IDS https://github.com/mistralai/mistral-common/issues/105#issuecomment-2997200779
-  START = 1 # <s>
+  BOS = 1 # <s>
   INS_START = 3 # [INS]
   INS_END = 4 # [/INS]
+  EOS = 2 # </s>
 
   tokens = []
-  #tokens = [START]
   images = []
   image_start_indices = []
   for message in messages:
     if message["role"] == "user":
-      #tokens.append(INS_START)
+      tokens.append(BOS)
+      tokens.append(INS_START)
       if type(message["content"]) == str:
         tokens = tokens + encode(message["content"], add_special=add_special)
       else:
@@ -109,9 +110,12 @@ def tokenize_messages_dict(messages, add_special=False):
               images.append(processed_image)
           else:
             raise NameError(f"Error processing messages. Unknown content type {content["type"]}")
-      #tokens.append(INS_END)
-    elif message["role"] == "assistant": # assistant?
-      tokens = tokens + encode(message["content"])
+      # https://huggingface.co/mistral-community/pixtral-12b
+      # append at end of user prompt
+      # see 'usage example' in the link above
+      tokens.append(INS_END)
+    elif message["role"] == "assistant":
+      tokens = tokens + encode(message["content"]) + [EOS]
     else:
       raise NameError(f"Error processing messages. Unknown role {message["role"]}")
     
@@ -123,12 +127,12 @@ def feed_forward(block_params: TransformerBlock, hidden_state_BTC: jax.Array) ->
   x = hidden_state_BTC
   x1 = jax.nn.silu(x @ block_params.feed_forward_w1_weight.T)
   x3 = x @ block_params.feed_forward_w3_weight.T
-  x2 = (x1 * x3) @ block_params.feed_forward_w2_weight.T # element-wise multiplication followed by matmul
+  x2 = (x1 * x3) @ block_params.feed_forward_w2_weight.T
   return x2
 
 @jax.jit
 def conv2d(model_params: PixtralModel, image_CHW) -> jax.Array:
-    patch_size = 16
+    patch_size = 16 # params.json
     H, W = image_CHW.shape[1:]
     h, w = H//patch_size, W//patch_size
     patch_embeddings_HWO = jax.lax.conv_general_dilated(
@@ -136,7 +140,7 @@ def conv2d(model_params: PixtralModel, image_CHW) -> jax.Array:
         model_params.vision_encoder.patch_conv_weight,
         (patch_size, patch_size),
         'SAME',
-        preferred_element_type=jnp.float32,
+        preferred_element_type=jnp.float32, # OPTIMIZATION: test in bfloat16 (do a grep on float32 actually...)
         precision=jax.lax.Precision.DEFAULT
     )
     return patch_embeddings_HWO.astype(jnp.bfloat16)
@@ -147,11 +151,11 @@ def RMSnorm(hidden_state, weight):
   hidden_state = hidden_state
   weight = weight
   squared = jax.lax.pow(hidden_state, 2)
-  mean = (jnp.mean(squared, axis=-1, keepdims=True) + eps) # float, double -> ?
-  rsqrt = jax.lax.rsqrt(mean) # float, float -> ?
-  hidden_state = jnp.multiply(hidden_state, rsqrt) # float, float -> 
+  mean = (jnp.mean(squared, axis=-1, keepdims=True) + eps)
+  rsqrt = jax.lax.rsqrt(mean)
+  hidden_state = jnp.multiply(hidden_state, rsqrt)
   hidden_state = hidden_state
-  hidden_state = jnp.multiply(hidden_state, weight) # bfloat16, bfloat16 -> ?
+  hidden_state = jnp.multiply(hidden_state, weight)
   return hidden_state
 
 @partial(jax.jit, static_argnames=["max_i", "d"])
@@ -174,20 +178,21 @@ def apply_rope(hidden_state, freqs):
     # rotate each pair by its corresponding theta:
     # rotating a vector <x,y> by theta == multiplying (x + iy) by e^(i*theta)
         # where i = sqrt(-1), and x = re(al), and y = im(aginary) components
-    # e^(i*theta) = cos(theta) + i*sin(theta)
+    # derivation:
+    # complex rotation factor = e^(i*theta) = cos(theta) + i*sin(theta)
     # so (x + i*y) * e^(i*theta) =
     # = (x + i*y) * (cos(theta) + i*sin(theta))
     # = x*cos(theta) + i*y*cos(theta) + x*i*sin(theta) + i*y*i*sin(theta)
     # = x*cos(theta) - y*sin(theta) + i*(y*cos(theta) + x*sin(theta))
     # = <x*cos(theta) - y*sin(theta), y*cos(theta) + x*sin(theta)>
-    cos, sin = jnp.real(freqs).astype(jnp.bfloat16), jnp.imag(freqs).astype(jnp.bfloat16)
+    cos, sin = jnp.real(freqs), jnp.imag(freqs)
     re_rot = re*cos - im*sin
     im_rot = im*cos + re*sin
     hidden_state_pairs_rot = jnp.concatenate([re_rot, im_rot], axis=-1) # (B, T, d//2, 2)
     hidden_state_rot = jnp.zeros_like(hidden_state)
     hidden_state_rot = hidden_state_rot.at[..., ::2].set(re_rot)
     hidden_state_rot = hidden_state_rot.at[..., 1::2].set(im_rot) # [re, im, re, im, re, im, ... ]
-    return hidden_state_rot
+    return hidden_state_rot.astype(jnp.bfloat16)
 
 @partial(jax.jit, static_argnames=["max_h", "max_w", "d"])
 def precompute_rope_freqs_2d(max_h, max_w, d):

@@ -7,7 +7,6 @@ from einops import rearrange
 import jax.random as jrand
 from functools import partial
 
-# mm_preprocessor :: [Image] -> [image_tiles or whatever]
 from PIL import Image
 import cv2
 
@@ -26,7 +25,7 @@ def precompute_specific_position_rope_freqs_1d(i, d):
 
 
 @partial(jax.jit, static_argnames=["query_heads","kv_heads","head_dim"])
-def pixtral_attention_cached(block_params: TransformerBlock, hidden_state_BTC, freqs, query_heads, kv_heads, head_dim,
+def pixtral_attention_cached(block_params: TransformerBlock, hidden_state_BTC, freqs, query_heads, kv_heads, head_dim, attn_scale,
                              K_cache, V_cache, next_token_mask, padding_mask):
   ## COMPUTE NEXT Q, K, and V FOR THE SINGLE TOKEN INPUT
   # compute qkv
@@ -44,15 +43,11 @@ def pixtral_attention_cached(block_params: TransformerBlock, hidden_state_BTC, f
   V = rearrange(V, "B T (Hk d) -> B Hk T d", Hk=Hk, d=head_dim)
 
   # rope1D AFTER splitting into GQA heads
-  # TODO MAKE THE FREQ PROPER POSITION
-    # this will require a new rope that just computes freq(pos, d_static)
   Q = apply_rope(Q, freqs)
-  K = apply_rope(K, freqs) # both have the same head dim
+  K = apply_rope(K, freqs)
 
   K = K[:, :, None, :, :] # broadcast over r
   V = V[:, :, None, :, :] # broadcast over r
-
-  # repeat kv to match query (optimization: view or broadcast instead of repeat)
 
   ## LOAD KV CACHE
   next_token_mask = next_token_mask[None, None, None, :, None] # (T,) => (B, Hk, r, T, d)
@@ -62,8 +57,7 @@ def pixtral_attention_cached(block_params: TransformerBlock, hidden_state_BTC, f
   # uses xformers memory efficient attention
   # https://github.com/facebookresearch/xformers/blob/e1a17a9235206dc7cd5999ce65ce79ff3cd4665d/xformers/ops/fmha/__init__.py#L194
   #scale = jax.lax.rsqrt(Q.shape[-1]) # rqrt does not accept int64
-  scale = 1.0 / jnp.sqrt(Q.shape[-1])
-  Q = jnp.float32(Q * scale)
+  Q = Q*attn_scale
   attn = Q @ jnp.swapaxes(K, -1, -2)
   attn = attn + jnp.where(padding_mask, -jnp.inf, 0) # mask out padding tokens that keep the shape constant. Q is just 1, but K and V (after kv cache) is max_tokens
   attn = jax.nn.softmax(attn, axis=-1) # kernel does this
@@ -80,11 +74,11 @@ def pixtral_attention_cached(block_params: TransformerBlock, hidden_state_BTC, f
 # make cached
 # https://github.com/mistralai/mistral-inference/blob/6eb35510403825cfb430b0004443053e8c4b70dc/src/mistral_inference/transformer_layers.py#L123
 @partial(jax.jit, static_argnames=["query_heads","kv_heads","head_dim"])
-def transformer_block_cached(block_params: TransformerBlock, hidden_state_BTC: jax.Array, freqs_1d, query_heads, kv_heads, head_dim,
+def transformer_block_cached(block_params: TransformerBlock, hidden_state_BTC: jax.Array, freqs_1d, query_heads, kv_heads, head_dim, attn_scale,
                              K_cache, V_cache, next_token_mask, padding_mask):
   # same block for vision encoder AND transformer
   residual_BTC = RMSnorm(hidden_state_BTC, block_params.attention_norm_weight) ## attention norm
-  residual_BTC, K_cache, V_cache = pixtral_attention_cached(block_params, residual_BTC, freqs_1d, query_heads, kv_heads, head_dim,
+  residual_BTC, K_cache, V_cache = pixtral_attention_cached(block_params, residual_BTC, freqs_1d, query_heads, kv_heads, head_dim, attn_scale,
                                                             K_cache, V_cache, next_token_mask, padding_mask)
   hidden_state_BTC = hidden_state_BTC + residual_BTC
   residual_BTC = RMSnorm(hidden_state_BTC, block_params.ffn_norm_weight) ## ff norm
@@ -101,15 +95,17 @@ def next_token_embedding(model_params: PixtralModel, next_token_batch) -> jax.Ar
 
 @jax.jit
 def mm_forward_cached(model_params: PixtralModel, next_token_batch, kvcache, next_token_index):
-  # get embeddings
+  # token embeddings
   hidden_state_BTC = next_token_embedding(model_params, next_token_batch)[None, :] # fake batch for now
 
+  # rope freqs
   head_dim = 128 # params.json
   freqs = precompute_specific_position_rope_freqs_1d(next_token_index, head_dim)
 
   # attention
   Hq = 32 # params.json
   Hk = 8 # params.json
+  attn_scale = jnp.bfloat16(1.0 / jnp.sqrt(head_dim))
   # create masks
   _, B, _, _, T, d = kvcache.K.shape
   next_token_mask = (jnp.arange(T) == next_token_index) # demarcate location of next token
@@ -117,7 +113,7 @@ def mm_forward_cached(model_params: PixtralModel, next_token_batch, kvcache, nex
   # loop through attention layers
   def scanf(hidden_state, xfmr_block_data):
     block_params, block_kvcache = xfmr_block_data
-    hidden_state, K, V = transformer_block_cached(block_params, hidden_state, freqs, Hq, Hk, head_dim,
+    hidden_state, K, V = transformer_block_cached(block_params, hidden_state, freqs, Hq, Hk, head_dim, attn_scale,
                                                   block_kvcache.K, block_kvcache.V, next_token_mask, padding_mask)
     return hidden_state, (K, V)
   xfmr_blocks_data = (
