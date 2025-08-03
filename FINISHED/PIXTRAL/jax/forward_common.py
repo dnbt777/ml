@@ -141,7 +141,7 @@ def conv2d(model_params: PixtralModel, image_CHW) -> jax.Array:
         (patch_size, patch_size),
         'SAME',
         preferred_element_type=jnp.float32, # OPTIMIZATION: test in bfloat16 (do a grep on float32 actually...)
-        precision=jax.lax.Precision.DEFAULT
+        precision=jax.lax.Precision.HIGHEST
     )
     return patch_embeddings_HWO.astype(jnp.bfloat16)
 
@@ -158,6 +158,8 @@ def RMSnorm(hidden_state, weight):
   hidden_state = jnp.multiply(hidden_state, weight)
   return hidden_state
 
+
+
 @partial(jax.jit, static_argnames=["max_i", "d"])
 def precompute_rope_freqs_1d(max_i, d):
     rope_theta = 1_000_000_000 # params.json
@@ -168,6 +170,7 @@ def precompute_rope_freqs_1d(max_i, d):
     return jax.lax.complex(cos, sin).astype(jnp.complex64)
 
 
+    
 @jax.jit
 def apply_rope(hidden_state, freqs):
     original_shape = hidden_state.shape # ..., T, C
@@ -190,8 +193,8 @@ def apply_rope(hidden_state, freqs):
     im_rot = im*cos + re*sin
     hidden_state_pairs_rot = jnp.concatenate([re_rot, im_rot], axis=-1) # (B, T, d//2, 2)
     hidden_state_rot = jnp.zeros_like(hidden_state)
-    hidden_state_rot = hidden_state_rot.at[..., ::2].set(re_rot)
-    hidden_state_rot = hidden_state_rot.at[..., 1::2].set(im_rot) # [re, im, re, im, re, im, ... ]
+    hidden_state_rot = hidden_state_rot.at[..., ::2].set(re_rot.astype(jnp.bfloat16))
+    hidden_state_rot = hidden_state_rot.at[..., 1::2].set(im_rot.astype(jnp.bfloat16)) # [re, im, re, im, re, im, ... ]
     return hidden_state_rot.astype(jnp.bfloat16)
 
 @partial(jax.jit, static_argnames=["max_h", "max_w", "d"])

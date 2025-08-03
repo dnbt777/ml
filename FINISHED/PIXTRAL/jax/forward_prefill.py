@@ -61,8 +61,7 @@ def transformer_block_prefill(block_params: TransformerBlock, hidden_state_BTC: 
   return hidden_state_BTC, K, V
 
 
-
-def embedding(model_params: PixtralModel, message_tokens, processed_images, image_intext_start_indices) -> jax.Array:
+def multimodal_embedding(model_params: PixtralModel, message_tokens, processed_images, image_intext_start_indices) -> jax.Array:
   # gets the embeddings of the tokens
   # already the exact length needed for images. contains img tokens including img_br and img_end
   text_embeddings = text_embedding(model_params, message_tokens)
@@ -79,7 +78,7 @@ def embedding(model_params: PixtralModel, message_tokens, processed_images, imag
     patches_H, patches_W = pixels_H//patch_size, pixels_W//patch_size
     inimg_end_idx = inimg_start_idx + patches_H*patches_W # size(unformatted patches) = img patches H * img patches W
     intext_end_idx = intext_start_idx + patches_H*(patches_W + 1) # size(final patches) = img patches + break tokens + end token
-    print(image_embeddings.shape, intext_start_idx, intext_end_idx, patches_H, patches_W)
+    #print(image_embeddings.shape, intext_start_idx, intext_end_idx, patches_H, patches_W)
     # there are two start indexes we will need. one is for the image inside of the image_embeddings. the other is where the image starts in the text_embeddings.
     image_embedding_TC = image_embeddings[inimg_start_idx:inimg_end_idx, ...]
     image_embedding_HWC = jnp.reshape(image_embedding_TC, (patches_H, patches_W, patches_C))
@@ -172,16 +171,23 @@ def get_causal_mask(T: int) -> jax.Array:
     return mask
 
 
-def mm_forward_prefill(model_params: PixtralModel, message_tokens, processed_images, intext_image_start_indices):
-  hidden_state_BTC = embedding(model_params, message_tokens, processed_images, intext_image_start_indices)[jnp.newaxis, :] # fake batch for now
+def text_forward_prefill(model_params: PixtralModel, message_tokens):
+  hidden_state_BTC = text_embedding(model_params, message_tokens)[jnp.newaxis, :]
+  return forward_prefill(model_params, hidden_state_BTC)
 
+
+def mm_forward_prefill(model_params: PixtralModel, message_tokens, processed_images, intext_image_start_indices):
+  hidden_state_BTC = multimodal_embedding(model_params, message_tokens, processed_images, intext_image_start_indices)[jnp.newaxis, :] # fake batch for now
+  return forward_prefill(model_params, hidden_state_BTC)
+
+
+def forward_prefill(model_params, hidden_state_BTC):
   B, T, C = hidden_state_BTC.shape
   head_dim = 128 # params.json
   max_pos, d = T, head_dim
   freqs = precompute_rope_freqs_1d(max_pos, d) # mistral does rope after splitting k and q into gqa heads. q and k are split into the same channel size per head
 
-  # attention
-  # loop through attention layers
+  # attention layers
   Hq = 32 # params.json
   Hk = 8 # params.json
   attn_mask = get_causal_mask(T)
@@ -214,6 +220,9 @@ def mm_forward_prefill(model_params: PixtralModel, message_tokens, processed_ima
 
 
 def inference_prefill(key, pixtral_params, tokens, images, intext_image_start_indices) -> str:
-  next_token_logit, kvcache = mm_forward_prefill(pixtral_params, tokens, images, intext_image_start_indices)
+  if images:
+      next_token_logit, kvcache = mm_forward_prefill(pixtral_params, tokens, images, intext_image_start_indices)
+  else:
+      next_token_logit, kvcache = text_forward_prefill(pixtral_params, tokens)
   next_token = jrand.categorical(key, next_token_logit, axis=-1)
   return next_token, kvcache

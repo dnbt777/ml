@@ -56,7 +56,7 @@ def load_params(paths: str, dummy: bool = False) -> PixtralModel:
             for path in paths:
                 with safe_open(path, framework="numpy") as f:
                     if key in f.keys():
-                        tensor = f.get_tensor(key).astype(model_dtype)
+                        tensor = f.get_tensor(key)#.astype(model_dtype)
                         return jax.device_put(tensor)
                         # would be better in c/rust probably
             raise KeyError(f"Tensor with key '{key}' not found")
@@ -66,7 +66,7 @@ def load_params(paths: str, dummy: bool = False) -> PixtralModel:
                 with safe_open(path, framework="numpy") as f:
                     for i in range(count):
                         key = fmt_key.format(i)
-                        mats.append(f.get_tensor(key).astype(model_dtype))
+                        mats.append(f.get_tensor(key))#.astype(model_dtype))
             host_stack = np.stack(mats).astype(model_dtype)
             
             return jax.device_put(jnp.array(mats, dtype=model_dtype))
