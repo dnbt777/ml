@@ -1,3 +1,6 @@
 from inference import chat
 
-chat()
+chat(
+    lora_path="loras/test.safetensors",
+    verbose=True,
+)

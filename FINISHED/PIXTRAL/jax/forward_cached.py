@@ -24,6 +24,7 @@ def precompute_specific_position_rope_freqs_1d(i, d):
     return jax.lax.complex(cos, sin).astype(jnp.complex64)
 
 
+
 @partial(jax.jit, static_argnames=["query_heads","kv_heads","head_dim"])
 def pixtral_attention_cached(block_params: TransformerBlock, hidden_state_BTC, freqs, query_heads, kv_heads, head_dim, attn_scale,
                              K_cache, V_cache, next_token_mask, padding_mask):
@@ -70,8 +71,7 @@ def pixtral_attention_cached(block_params: TransformerBlock, hidden_state_BTC, f
   return out.astype(jnp.bfloat16), K, V
 
 
-# TODO
-# make cached
+
 # https://github.com/mistralai/mistral-inference/blob/6eb35510403825cfb430b0004443053e8c4b70dc/src/mistral_inference/transformer_layers.py#L123
 @partial(jax.jit, static_argnames=["query_heads","kv_heads","head_dim"])
 def transformer_block_cached(block_params: TransformerBlock, hidden_state_BTC: jax.Array, freqs_1d, query_heads, kv_heads, head_dim, attn_scale,
@@ -87,10 +87,12 @@ def transformer_block_cached(block_params: TransformerBlock, hidden_state_BTC: j
   return hidden_state_BTC, K_cache, V_cache
 
 
+
 @jax.jit
 def next_token_embedding(model_params: PixtralModel, next_token_batch) -> jax.Array:
   embeddings = text_embedding(model_params, next_token_batch)
   return embeddings.astype(jnp.bfloat16)
+
 
 
 @jax.jit
@@ -131,6 +133,7 @@ def mm_forward_cached(model_params: PixtralModel, next_token_batch, kvcache, nex
       V=post_scan_remap(Vs),
   )
   return hidden_state_BTC, kvcache
+
 
 
 @jax.jit

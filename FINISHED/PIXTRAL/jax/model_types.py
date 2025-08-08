@@ -18,7 +18,6 @@ from typing import NamedTuple, List
 
 
 #######
-
 ## kvcache
 # contains a list of arrays corresponding to each layer
 # only used in lang forward
@@ -28,6 +27,7 @@ class KVCache(NamedTuple):
 
 
 
+#######
 ## vision encoder
 class VisionEncoderLayer(NamedTuple):
   attention_wk_weight: jax.Array # (1024, 1024)
@@ -84,6 +84,7 @@ class PixtralModel(NamedTuple):
   vision_encoder: VisionEncoder
   vision_language_adapter: VisionLanguageAdapter
   transformer: Transformer
+
 
 
 #######

@@ -1,0 +1,23 @@
+{ "vocab": [
+  {"rank": 0,  "token_str": "<unk>",           "is_control": true},
+  {"rank": 1,  "token_str": "<s>",             "is_control": true},
+  {"rank": 2,  "token_str": "</s>",            "is_control": true},
+  {"rank": 3,  "token_str": "[INST]",          "is_control": true},
+  {"rank": 4,  "token_str": "[/INST]",        "is_control": true},
+  {"rank": 5,  "token_str": "[AVAILABLE_TOOLS]","is_control": true},
+  {"rank": 6,  "token_str": "[/AVAILABLE_TOOLS]","is_control": true},
+  {"rank": 7,  "token_str": "[TOOL_RESULTS]","is_control": true},
+  {"rank": 8,  "token_str": "[/TOOL_RESULTS]","is_control": true},
+  {"rank": 9,  "token_str": "[TOOL_CALLS]","is_control": true},
+  {"rank": 10, "token_str": "[IMG]",          "is_control": true},
+  {"rank": 11, "token_str": "<pad>",          "is_control": true},
+  {"rank": 12, "token_str": "[IMG_BREAK]","is_control": true},
+  {"rank": 13, "token_str": "[IMG_END]","is_control": true},
+  {"rank": 14, "token_str": "[PREFIX]","is_control": true},
+  {"rank": 15, "token_str": "[MIDDLE]","is_control": true},
+  {"rank": 16, "token_str": "[SUFFIX]","is_control": true},
+  {"rank": 17, "token_str": "[SYSTEM_PROMPT]","is_control": true},
+  {"rank": 18, "token_str": "[/SYSTEM_PROMPT]","is_control": true},
+  {"rank": 19, "token_str": "[TOOL_CONTENT]","is_control": true}
+]
+}
