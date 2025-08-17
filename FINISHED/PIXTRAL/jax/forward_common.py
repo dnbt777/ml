@@ -78,6 +78,7 @@ def decode(ids):
 
 
 import json
+#import re
 import regex as re
 import base64
 
@@ -333,11 +334,17 @@ def tokenize_messages_dict_with_masks(messages, add_eos=True):
 
 
 def pixtral_attention(block_params: TransformerBlock, hidden_state_BTC, freqs,
-                              query_heads, kv_heads, head_dim, attn_mask):
+                      query_heads, kv_heads, head_dim, attn_mask,
+                      block_lora_params=None):      
   # compute qkv
   Q = hidden_state_BTC @ block_params.attention_wq_weight.T
   K = hidden_state_BTC @ block_params.attention_wk_weight.T
   V = hidden_state_BTC @ block_params.attention_wv_weight.T
+
+  if block_lora_params:
+      Q = Q + block_lora_params.alpha_q*((hidden_state_BTC @ block_lora_params.in_q) @ block_lora_params.out_q)
+      K = K + block_lora_params.alpha_k*((hidden_state_BTC @ block_lora_params.in_k) @ block_lora_params.out_k)
+      V = V + block_lora_params.alpha_v*((hidden_state_BTC @ block_lora_params.in_v) @ block_lora_params.out_v)
 
   # split into heads (GQA)
   Hk=kv_heads
@@ -366,6 +373,8 @@ def pixtral_attention(block_params: TransformerBlock, hidden_state_BTC, freqs,
   # collapse heads and outproject
   attn = rearrange(attn, "B H r T d -> B T (H r d)")
   out = attn @ block_params.attention_wo_weight.T
+  if block_lora_params:
+      out = out + block_lora_params.alpha_o*((attn @ block_lora_params.in_o) @ block_lora_params.out_o)
 
   return out.astype(jnp.bfloat16)
 
@@ -376,10 +385,10 @@ def transformer_block(
     block_params: TransformerBlock,
     hidden_state_BTC: jax.Array,
     freqs_1d, query_heads, kv_heads, head_dim,
-    attn_mask) -> jax.Array:
+    attn_mask, block_lora_params=None) -> jax.Array:
   # same block for vision encoder AND transformer
   residual_BTC = RMSnorm(hidden_state_BTC, block_params.attention_norm_weight) ## attention norm
-  residual_BTC = pixtral_attention(block_params, residual_BTC, freqs_1d, query_heads, kv_heads, head_dim, attn_mask)
+  residual_BTC = pixtral_attention(block_params, residual_BTC, freqs_1d, query_heads, kv_heads, head_dim, attn_mask, block_lora_params=block_lora_params)
   hidden_state_BTC = hidden_state_BTC + residual_BTC
   residual_BTC = RMSnorm(hidden_state_BTC, block_params.ffn_norm_weight) ## ff norm
   residual_BTC = feed_forward(block_params, residual_BTC)
@@ -389,44 +398,50 @@ def transformer_block(
 
 
 
-def multimodal_embedding(model_params: PixtralModel, message_tokens, processed_images, image_intext_start_indices) -> jax.Array:
+# probably the biggest bottleneck. needs heavy optimization
+# this only runs once for prefill
+# in the future, when we want to add prefill on top of an existing kvcache (i.e. user -> assistant -> 2nd user response w images),
+# this will need to be optimized
+def multimodal_embedding(model_params: PixtralModel, batch_message_tokens, batch_image_sets, image_intext_start_indices_batches) -> jax.Array:
   # gets the embeddings of the tokens
   # already the exact length needed for images. contains img tokens including img_br and img_end
-  text_embeddings = text_embedding(model_params, message_tokens)
+  text_embeddings_batch = text_embedding(model_params, batch_message_tokens) # BTC
 
   # get image embeddings
-  image_embeddings = vision_encoder(model_params, processed_images)
+  image_embeddings_batch = [vision_encoder(model_params, image_set) for image_set in batch_image_sets]
 
   # replace img token placeholders with images
-  patches_C = image_embeddings.shape[-1]
+  patches_C = image_embeddings_batch[0].shape[-1]
   patch_size = 16 # params.json
-  inimg_start_idx = 0
-  for i, intext_start_idx in enumerate(image_intext_start_indices):
-    pixels_C, pixels_H, pixels_W = processed_images[i].shape
-    patches_H, patches_W = pixels_H//patch_size, pixels_W//patch_size
-    inimg_end_idx = inimg_start_idx + patches_H*patches_W # size(unformatted patches) = img patches H * img patches W
-    intext_end_idx = intext_start_idx + patches_H*(patches_W + 1) # size(final patches) = img patches + break tokens + end token
-    #print(image_embeddings.shape, intext_start_idx, intext_end_idx, patches_H, patches_W)
-    # there are two start indexes we will need. one is for the image inside of the image_embeddings. the other is where the image starts in the text_embeddings.
-    image_embedding_TC = image_embeddings[inimg_start_idx:inimg_end_idx, ...]
-    image_embedding_HWC = jnp.reshape(image_embedding_TC, (patches_H, patches_W, patches_C))
-    # add the embeddings for img_break and img_end
-    img_break_token_id, img_end_token_id = 1, 2
-    img_break_embed = model_params.tok_embeddings_weight[img_break_token_id]
-    img_end_embed = model_params.tok_embeddings_weight[img_end_token_id]
-    img_formatting_tokens = jnp.repeat(img_break_embed[None, None, :], patches_H, axis=0) # add img break tokens to each row
-    img_formatting_tokens = img_formatting_tokens.at[-1, 0, :].set(img_end_embed) # replace last row's break token with an end token
-    formatted_image_embedding_HWC = jnp.concatenate([image_embedding_HWC, img_formatting_tokens], axis=1)
-    formatted_image_embedding_TC = jnp.reshape(formatted_image_embedding_HWC, (patches_H*(patches_W+1), patches_C))
+  img_break_token_id, img_end_token_id = 1, 2
+  img_break_embed = model_params.tok_embeddings_weight[img_break_token_id]
+  img_end_embed = model_params.tok_embeddings_weight[img_end_token_id]
+  for image_batch in range(len(image_intext_start_indices_batches)):
+      inimg_start_idx = 0
+      image_intext_start_indices = image_intext_start_indices_batches[image_batch]
+      image_embeddings = image_embeddings_batch[image_batch]
+      for i, intext_start_idx in enumerate(image_intext_start_indices):
+        pixels_C, pixels_H, pixels_W = batch_image_sets[image_batch][i].shape
+        patches_H, patches_W = pixels_H//patch_size, pixels_W//patch_size
+        inimg_end_idx = inimg_start_idx + patches_H*patches_W # size(unformatted patches) = img patches H * img patches W
+        intext_end_idx = intext_start_idx + patches_H*(patches_W + 1) # size(final patches) = img patches + break tokens + end token
+        # there are two start indexes we will need. one is for the image inside of the image_embeddings. the other is where the image starts in the text_embeddings.
+        image_embedding_TC = image_embeddings[inimg_start_idx:inimg_end_idx, ...]
+        image_embedding_HWC = jnp.reshape(image_embedding_TC, (patches_H, patches_W, patches_C))
+        # add the embeddings for img_break and img_end
+        img_formatting_tokens = jnp.repeat(img_break_embed[None, None, :], patches_H, axis=0) # add img break tokens to each row
+        img_formatting_tokens = img_formatting_tokens.at[-1, 0, :].set(img_end_embed) # replace last row's break token with an end token
+        formatted_image_embedding_HWC = jnp.concatenate([image_embedding_HWC, img_formatting_tokens], axis=1)
+        formatted_image_embedding_TC = jnp.reshape(formatted_image_embedding_HWC, (patches_H*(patches_W+1), patches_C))
+    
+        text_embeddings_batch = jax.lax.dynamic_update_slice(
+          text_embeddings_batch, # dest
+          formatted_image_embedding_TC[None, :], # source # bfloat16 just for now
+          (image_batch, intext_start_idx, 0) # overwrite index = starting index in text tokens
+        )
+        inimg_start_idx = inimg_end_idx
 
-    text_embeddings = jax.lax.dynamic_update_slice(
-      text_embeddings, # dest
-      formatted_image_embedding_TC, # source # bfloat16 just for now
-      (intext_start_idx, 0) # overwrite index = starting index in text tokens
-    )
-    inimg_start_idx = inimg_end_idx
-
-  return text_embeddings.astype(jnp.bfloat16)
+  return text_embeddings_batch.astype(jnp.bfloat16)
 
 
 
@@ -534,7 +549,7 @@ def apply_rope(hidden_state, freqs):
     cos, sin = jnp.real(freqs), jnp.imag(freqs)
     re_rot = re*cos - im*sin
     im_rot = im*cos + re*sin
-    hidden_state_pairs_rot = jnp.concatenate([re_rot, im_rot], axis=-1) # (B, T, d//2, 2)
+    #hidden_state_pairs_rot = jnp.concatenate([re_rot, im_rot], axis=-1) # (B, T, d//2, 2)
     hidden_state_rot = jnp.zeros_like(hidden_state)
     hidden_state_rot = hidden_state_rot.at[..., ::2].set(re_rot.astype(jnp.bfloat16))
     hidden_state_rot = hidden_state_rot.at[..., 1::2].set(im_rot.astype(jnp.bfloat16)) # [re, im, re, im, re, im, ... ]
@@ -572,11 +587,10 @@ def precompute_rope_freqs_2d(max_h, max_w, d):
 
 
 @jax.jit
-def text_embedding(model_params: PixtralModel, text_tokens) -> jax.Array:
-  text_tokens = jnp.array(text_tokens, dtype=int)
-  embeddings = jnp.take(model_params.tok_embeddings_weight, text_tokens, axis=0) # one-hot but faster ig
-  return embeddings
-
+def text_embedding(model_params: PixtralModel, text_tokens_batch) -> jax.Array:
+  text_tokens_batch = jnp.array(text_tokens_batch, dtype=int) # B, T
+  embeddings_BTC = jnp.take(model_params.tok_embeddings_weight, text_tokens_batch, axis=0) # C, B, T
+  return embeddings_BTC
 
 
 
@@ -634,42 +648,28 @@ def get_causal_mask(T: int) -> jax.Array:
     return mask
 
 
-# separated for efficiency. mm is slightly more expensive + not always needed
-def text_forward(model_params: PixtralModel, message_tokens):
-  hidden_state_BTC = text_embedding(model_params, message_tokens)[jnp.newaxis, :]
-  return forward(model_params, hidden_state_BTC)
 
-
-def mm_forward(model_params: PixtralModel, message_tokens, processed_images, intext_image_start_indices):
-  hidden_state_BTC = multimodal_embedding(model_params, message_tokens, processed_images, intext_image_start_indices)[jnp.newaxis, :] # fake batch for now
-  return forward(model_params, hidden_state_BTC)
+"""
+def text_forward(model_params: PixtralModel, batch_tokens, batch_next_token_indices, batch_attn_mask, lora_params=None):
+  hidden_state_BTC = text_embedding(model_params, batch_tokens)
+  return forward(model_params, hidden_state_BTC, batch_next_token_indices, batch_attn_mask)
 
 
 
-def forward(model_params, hidden_state_BTC):
-  B, T, C = hidden_state_BTC.shape
-  head_dim = 128 # params.json
-  max_pos, d = T, head_dim
-  freqs = precompute_rope_freqs_1d(max_pos, d) # mistral does rope after splitting k and q into gqa heads. q and k are split into the same channel size per head
-
-  # attention layers
-  Hq = 32 # params.json
-  Hk = 8 # params.json
-  attn_mask = get_causal_mask(T)
-  # head dim defined above - it's used to calculate rope1d frequencies
-  # scan compiles faster than a for loop
-  def scanf(hidden_state, block_params):
-    hidden_state = transformer_block(block_params, hidden_state, freqs, Hq, Hk, head_dim, attn_mask)
-    return hidden_state, None
-  hidden_state_BTC, _ = jax.lax.scan(scanf, hidden_state_BTC, model_params.transformer.transformer_layers)
-
-  # layernorm
-  hidden_state_BTC = layernorm(hidden_state_BTC, model_params.norm_weight, jnp.zeros((1, hidden_state_BTC.shape[-1])))
-  # lm_head: channel -> vocab logits
-  hidden_state_BTC = hidden_state_BTC @ model_params.output_weight.T # (B, T, C) @ (C, vocab) => (B, T, vocab)
-  return hidden_state_BTC
+def mm_forward(model_params: PixtralModel, batch_tokens, batch_image_sets, batch_intext_image_start_indices, batch_next_token_indices, batch_attn_mask, lora_params=None):
+  hidden_state_BTC = multimodal_embedding(model_params, batch_tokens, batch_image_sets, batch_intext_image_start_indices)
+  return forward(model_params, hidden_state_BTC, batch_next_token_indices, batch_attn_mask)
 
 
+
+def inference(key, pixtral_params, batch_tokens, batch_image_sets, batch_intext_image_start_indices, batch_next_token_indices, batch_attn_mask, temperature, lora_params=None) -> str:
+  if any([len(image_set) > 0 for image_set in batch_image_sets]):
+      batch_next_token_logit, kvcache = mm_forward(pixtral_params, batch_tokens, batch_image_sets, batch_intext_image_start_indices, batch_next_token_indices, batch_attn_mask)
+  else:
+      batch_next_token_logit, kvcache = text_forward(pixtral_params, batch_tokens, batch_next_token_indices, batch_attn_mask)
+  batch_next_token = jrand.categorical(key, batch_next_token_logit/max(temperature, 1e-5), axis=-1)
+  return batch_next_token, kvcache
+"""
 
 
 

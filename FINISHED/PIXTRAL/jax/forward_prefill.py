@@ -8,14 +8,19 @@ from typing import List
 from model_types import *
 from forward_common import *
 
-
+# the code is best read from bottom funcs to top funcs
 
 def pixtral_attention_prefill(block_params: TransformerBlock, hidden_state_BTC, freqs,
-                              query_heads, kv_heads, head_dim, attn_mask):
+                              query_heads, kv_heads, head_dim, attn_mask, block_lora_params=None):
   # compute qkv
   Q = hidden_state_BTC @ block_params.attention_wq_weight.T
   K = hidden_state_BTC @ block_params.attention_wk_weight.T
   V = hidden_state_BTC @ block_params.attention_wv_weight.T
+
+  if block_lora_params:
+      Q = Q + block_lora_params.alpha_q*((hidden_state_BTC @ block_lora_params.in_q) @ block_lora_params.out_q)
+      K = K + block_lora_params.alpha_k*((hidden_state_BTC @ block_lora_params.in_k) @ block_lora_params.out_k)
+      V = V + block_lora_params.alpha_v*((hidden_state_BTC @ block_lora_params.in_v) @ block_lora_params.out_v)
 
   # split into heads (GQA)
   Hk=kv_heads
@@ -37,6 +42,7 @@ def pixtral_attention_prefill(block_params: TransformerBlock, hidden_state_BTC, 
   scale = jnp.bfloat16(1.0 / jnp.sqrt(Q.shape[-1]))
   Q = Q*scale
   attn = Q @ jnp.swapaxes(K, -1, -2)
+  #attn_mask = rearrange(attn_mask, "(B Hk r) Tq Tk -> B Hk r Tq Tk", Hk=1, r=1)
   attn = jnp.where(attn_mask, jnp.bfloat16(-jnp.inf), attn) 
   attn = jax.nn.softmax(attn.astype(jnp.float32), axis=-1).astype(jnp.bfloat16) # do attn softmax in float32
   attn = attn @ V
@@ -44,6 +50,8 @@ def pixtral_attention_prefill(block_params: TransformerBlock, hidden_state_BTC, 
   # collapse heads and outproject
   attn = rearrange(attn, "B H r T d -> B T (H r d)")
   out = attn @ block_params.attention_wo_weight.T
+  if block_lora_params:
+      out = out + block_lora_params.alpha_o*((attn @ block_lora_params.in_o) @ block_lora_params.out_o)
 
   return out.astype(jnp.bfloat16), K, V
 
@@ -54,10 +62,10 @@ def transformer_block_prefill(
     block_params: TransformerBlock,
     hidden_state_BTC: jax.Array,
     freqs_1d, query_heads, kv_heads, head_dim,
-    attn_mask) -> jax.Array:
+    attn_mask, block_lora_params=None) -> jax.Array:
   # same block for vision encoder AND transformer
   residual_BTC = RMSnorm(hidden_state_BTC, block_params.attention_norm_weight) ## attention norm
-  residual_BTC, K, V = pixtral_attention_prefill(block_params, residual_BTC, freqs_1d, query_heads, kv_heads, head_dim, attn_mask)
+  residual_BTC, K, V = pixtral_attention_prefill(block_params, residual_BTC, freqs_1d, query_heads, kv_heads, head_dim, attn_mask, block_lora_params=block_lora_params)
   hidden_state_BTC = hidden_state_BTC + residual_BTC
   residual_BTC = RMSnorm(hidden_state_BTC, block_params.ffn_norm_weight) ## ff norm
   residual_BTC = feed_forward(block_params, residual_BTC)
@@ -66,19 +74,8 @@ def transformer_block_prefill(
 
 
 
-def text_forward_prefill(model_params: PixtralModel, message_tokens):
-  hidden_state_BTC = text_embedding(model_params, message_tokens)[jnp.newaxis, :]
-  return forward_prefill(model_params, hidden_state_BTC)
 
-
-
-def mm_forward_prefill(model_params: PixtralModel, message_tokens, processed_images, intext_image_start_indices):
-  hidden_state_BTC = multimodal_embedding(model_params, message_tokens, processed_images, intext_image_start_indices)[jnp.newaxis, :] # fake batch for now
-  return forward_prefill(model_params, hidden_state_BTC)
-
-
-
-def forward_prefill(model_params, hidden_state_BTC):
+def forward_prefill(model_params, hidden_state_BTC, batch_next_token_indices, batch_attn_mask, lora_params=None):
   B, T, C = hidden_state_BTC.shape
   head_dim = 128 # params.json
   max_pos, d = T, head_dim
@@ -87,13 +84,21 @@ def forward_prefill(model_params, hidden_state_BTC):
   # attention layers
   Hq = 32 # params.json
   Hk = 8 # params.json
-  attn_mask = get_causal_mask(T)
+  attn_mask = get_causal_mask(T)[None, None, :, :]
+  attn_mask = jnp.logical_or(batch_attn_mask[:, None, None, None, :], attn_mask)  # if True in either mask, mask out token
   # head dim defined above - it's used to calculate rope1d frequencies
   # scan compiles faster than a for loop
-  def scanf(hidden_state, block_params):
-    hidden_state, K, V = transformer_block_prefill(block_params, hidden_state, freqs, Hq, Hk, head_dim, attn_mask)
-    return hidden_state, (K, V)
-  hidden_state_BTC, kv_pairs = jax.lax.scan(scanf, hidden_state_BTC, model_params.transformer.transformer_layers)
+  if lora_params:
+    def scanf(hidden_state, carry):
+      xfmr_block_params, block_lora_params = carry
+      hidden_state, K, V = transformer_block_prefill(xfmr_block_params, hidden_state, freqs, Hq, Hk, head_dim, attn_mask, block_lora_params=block_lora_params)
+      return hidden_state, (K, V)
+    hidden_state_BTC, kv_pairs = jax.lax.scan(scanf, hidden_state_BTC, (model_params.transformer.transformer_layers, lora_params.attention_lora.layers))
+  else:
+      def scanf(hidden_state, xfmr_block_params):
+        hidden_state, K, V = transformer_block_prefill(xfmr_block_params, hidden_state, freqs, Hq, Hk, head_dim, attn_mask, block_lora_params=None)
+        return hidden_state, (K, V)
+      hidden_state_BTC, kv_pairs = jax.lax.scan(scanf, hidden_state_BTC, model_params.transformer.transformer_layers)
 
   # remap KVCache to appropriate structure
   post_scan_remap = lambda xs_tuple: jnp.stack(xs_tuple) # (K0, K1, K2..Kn) => jax.Array of shape (n,*K.shape)
@@ -104,7 +109,9 @@ def forward_prefill(model_params, hidden_state_BTC):
   )
 
   # inference - we only care about the final token past this point
-  hidden_state_BC = hidden_state_BTC[:, -1, :]
+  # USE NEXT TOKEN INDICES
+  B = hidden_state_BTC.shape[0]
+  hidden_state_BC = hidden_state_BTC[jnp.arange(B, dtype=int), batch_next_token_indices-1, :]
   # layernorm
   hidden_state_BC = layernorm(hidden_state_BC, model_params.norm_weight, jnp.zeros((1, hidden_state_BTC.shape[-1])))
   # lm_head: channel -> vocab logits
@@ -113,10 +120,35 @@ def forward_prefill(model_params, hidden_state_BTC):
 
 
 
-def inference_prefill(key, pixtral_params, tokens, images, intext_image_start_indices) -> str:
-  if images:
-      next_token_logit, kvcache = mm_forward_prefill(pixtral_params, tokens, images, intext_image_start_indices)
+def text_forward_prefill(model_params: PixtralModel, batch_tokens, batch_next_token_indices, batch_attn_mask, lora_params=None):
+  hidden_state_BTC = text_embedding(model_params, batch_tokens)
+  return forward_prefill(model_params, hidden_state_BTC, batch_next_token_indices, batch_attn_mask, lora_params=lora_params)
+
+
+
+def mm_forward_prefill(model_params: PixtralModel, batch_tokens, batch_image_sets,
+                       batch_intext_image_start_indices, batch_next_token_indices, batch_attn_mask, lora_params=None):
+  hidden_state_BTC = multimodal_embedding(model_params, batch_tokens, batch_image_sets, batch_intext_image_start_indices)
+  return forward_prefill(model_params, hidden_state_BTC, batch_next_token_indices, batch_attn_mask, lora_params=lora_params)
+
+
+
+def inference_prefill(key,
+                      pixtral_params, batch_tokens, batch_image_sets, batch_intext_image_start_indices,
+                      batch_next_token_indices, batch_attn_mask, temperature, lora_params=None) -> str:
+  if any([len(image_set) > 0 for image_set in batch_image_sets]):
+      batch_next_token_logit, kvcache = mm_forward_prefill(
+          pixtral_params, batch_tokens, batch_image_sets,
+          batch_intext_image_start_indices, batch_next_token_indices, batch_attn_mask,
+          lora_params=lora_params
+      )
   else:
-      next_token_logit, kvcache = text_forward_prefill(pixtral_params, tokens)
-  next_token = jrand.categorical(key, next_token_logit, axis=-1)
-  return next_token, kvcache
+      batch_next_token_logit, kvcache = text_forward_prefill(
+          pixtral_params, batch_tokens,
+        batch_next_token_indices, batch_attn_mask, lora_params=lora_params
+      )
+  batch_next_token = jrand.categorical(key, batch_next_token_logit/max(temperature, 1e-5), axis=-1)
+  return batch_next_token, kvcache
+
+
+

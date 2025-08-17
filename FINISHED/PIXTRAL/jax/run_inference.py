@@ -31,40 +31,5 @@ messages = [
 ]
 
 
-prompt = "Describe the image."
-response = "nah lmao i aint doin that" # fine tune it to say this!
-url_1 = "../images/chess.png"
-x = [
-  {
-      "role":
-      "user",
-      "content": [
-          {
-              "type": "image_url",
-              "image_url": {
-                  "url": url_1
-              }
-          },
-          {
-              "type": "text",
-              "text": prompt
-          },
-      ],
-  },
-]
-
-"""
-y = x + [ {
-  "role":
-  "assistant",
-  "content": [
-      {
-          "type": "text",
-          "text": response
-      },
-  ],
-},]
-"""
-messages = x
-
-get_completion(messages, max_tokens=32, temp=0.0)#, lora_path="loras/test.safetensors")
+completion = get_completion(messages, max_tokens=64, temp=0.0)#, lora_path="loras/test.safetensors")
+print(completion)

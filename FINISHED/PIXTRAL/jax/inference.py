@@ -8,10 +8,8 @@ import jax.random as jrand
 ## load params
 from load_model import load_params, fast_load_params
 from forward_common import encode, decode, tokenize_messages_dict
-from forward_training import (
-    load_dense_lora, apply_dense_lora,
-    load_attn_lora, apply_attn_lora
-)
+
+from forward_training import load_lora, LoRA
 
 # typing
 from typing import Tuple, List, Optional
@@ -132,7 +130,56 @@ def print_user_message(user_message):
             pass
             #print(f"{content['text']}")
     
-    
+
+
+def batch_parse_prompts(prompts, max_tokens):
+    # tokenize prompt
+    # SoA (for logic related (not performance) reasons)
+    batches = len(prompts)
+    batch_prompts_dict = {
+        "initial_prompt_tokens" : [],
+        "processed_images"      : [],
+        "image_start_indices"   : [],
+        "completion"            : [],
+        "completion_tokens"     : jnp.zeros((batches,max_tokens), dtype=int),
+        "tokens"                : [],
+        "next_token_index"      : [],
+        "padding_mask"          : [],
+    }
+
+    # store processed prompts and initialize values
+    for prompt in prompts:
+        prompt_tokens, processed_images, image_start_indices = tokenize_messages_dict(prompt)
+        batch_prompts_dict["initial_prompt_tokens"].append(prompt_tokens)
+        batch_prompts_dict["processed_images"].append(processed_images)
+        batch_prompts_dict["image_start_indices"].append(image_start_indices)
+        batch_prompts_dict["completion"].append("") # initialize completion as blank
+        batch_prompts_dict["tokens"].append(prompt_tokens)
+        batch_prompts_dict["next_token_index"].append(len(prompt_tokens))
+        batch_prompts_dict["padding_mask"].append(None)
+
+    # pad all prompts to be the size of the largest prompt + max_tokens
+    largest_prompt_tokens = max([len(prompt) for prompt in batch_prompts_dict["initial_prompt_tokens"]]) # pad ALL prompts to this size
+    prompt_count = len(prompts)
+    for i in range(prompt_count):
+        initial_prompt_length = len(batch_prompts_dict["initial_prompt_tokens"][i])
+        new_prompt_length = max_tokens + largest_prompt_tokens
+        padding_length = new_prompt_length - initial_prompt_length
+        batch_prompts_dict["tokens"][i] = jnp.append(jnp.array(batch_prompts_dict["tokens"][i]), jnp.zeros((padding_length,), dtype=int))
+        padding_mask = (jnp.arange(new_prompt_length) >= initial_prompt_length).astype(bool) # mask padding with True
+        assert jnp.sum(padding_mask).astype(int) == padding_length
+        batch_prompts_dict["padding_mask"][i] = padding_mask
+
+    # stack jax arrays into a batch
+    batch_prompts_dict["tokens"] = jnp.stack(batch_prompts_dict["tokens"]) # list[arrayT] -> arrayBT
+    batch_prompts_dict["padding_mask"] = jnp.stack(batch_prompts_dict["padding_mask"]) # list[arrayT] -> arrayBT
+    batch_prompts_dict["next_token_index"] = jnp.array(batch_prompts_dict["next_token_index"])
+
+    return batch_prompts_dict
+
+
+
+
 
 def chat(
     verbose=True, # pretty print statuses
@@ -201,7 +248,7 @@ def chat(
             pprint(messages)
         if not params_loaded:
             if lora_path:
-                lora_params = load_attn_lora(lora_path)
+                lora_params = load_lora(lora_path)
             # load params
             load_start = time.time()
             print_color("loading params...", color=color_grey)
@@ -210,9 +257,9 @@ def chat(
             params_loaded = True
             # apply loras
             if lora_path:
-                #lora_params = load_lora("loras/test.safetensors")
-                pixtral_params = apply_attn_lora(pixtral_params, lora_params)
-        completion = _get_completion(pixtral_params, messages, max_tokens, temp, verbose=False, color=color_jax_blue_light)
+                lora_params = load_lora("loras/test.safetensors")
+                #pixtral_params = apply_lora(pixtral_params, lora_params)
+        completion = _get_completion(pixtral_params, messages, max_tokens, temp, verbose=False, color=color_jax_blue_light, lora_params=lora_params)
         print() # add a newline
 
         # add ai response to chat
@@ -225,11 +272,10 @@ def chat(
 
 
 
-# user interface
 def get_completion(
-    messages,
+    prompt,
     max_tokens: int,
-    temp: float,
+    temp: float = 1.0,
     seed: float = (0_0)-7,
     verbose: bool = True,
     lora_path: str = None
@@ -238,37 +284,75 @@ def get_completion(
     safetensors_paths = ['./pixtral/consolidated.safetensors']
     pixtral_params = load_params(safetensors_paths)
     if verbose: print(f"Loaded params in {time.time() - load_start:.2f}s")
+    lora_params = None # lora_params is Optional<LoRA>
     if lora_path:
-                lora_params = load_attn_lora(lora_path)
-                pixtral_params = apply_attn_lora(pixtral_params, lora_params)
-    return _get_completion(pixtral_params, messages, max_tokens, temp, seed=seed, verbose=verbose)
+        lora_params = load_lora(lora_path)
+    return _get_completions(pixtral_params, [prompt], max_tokens, temp=temp, seed=seed, verbose=verbose, lora_params=lora_params)
+
+
+
+# user interface
+def get_completions(
+    prompts,
+    max_tokens: int,
+    temp: float = 1.0,
+    seed: float = (0_0)-7,
+    verbose: bool = True,
+    lora_path: str = None,
+) -> str:
+    # load model params
+    load_start = time.time()
+    safetensors_paths = ['./pixtral/consolidated.safetensors']
+    pixtral_params = load_params(safetensors_paths)
+    if verbose: print(f"Loaded params in {time.time() - load_start:.2f}s")
+    # load lora params
+    lora_params = None
+    if lora_path:
+        lora_params = load_lora(lora_path)
+    return _get_completions(pixtral_params, prompts, max_tokens, temp=temp, seed=seed, verbose=verbose, lora_params=lora_params)
+
+
+
+def _get_completion(
+    pixtral_params: PixtralModel,
+    prompt,
+    max_tokens: int,
+    temp: float = 1.0,
+    seed: float = (0_0)-7,
+    verbose: bool = True,
+    color: Optional[Tuple[int, int, int]] = None,
+    lora_params: Optional[LoRA] = None,
+) -> str:
+    return _get_completions(
+        pixtral_params,
+        [prompt],
+        max_tokens,
+        temp=temp,
+        seed=seed,
+        verbose=verbose,
+        color=color,
+        lora_params=lora_params,
+    )[0]
 
 
 
 # loads completion using existing params
-def _get_completion(
+def _get_completions(
     pixtral_params: PixtralModel,
-    messages,
+    prompts,
     max_tokens: int,
-    temp: float,
+    temp: float = 1.0,
     seed: float = (0_0)-7,
     verbose: bool = True,
-    color: Optional[Tuple[int, int, int]] = None
-) -> str:
+    color: Optional[Tuple[int, int, int]] = None,
+    lora_params: Optional[LoRA] = None,
+) -> List[str]:
     log = lambda *args: None
     if verbose:
         log = print
 
-    # tokenize prompt
-    prompt_tokens, images, image_start_indices = tokenize_messages_dict(messages)
-    log(f"input tokens: {len(prompt_tokens)}", prompt_tokens)
-    
-    # init completion
-    completion = ""
-    completion_token_count = 0
-    completion_tokens = []
-    tokens = prompt_tokens
-    max_tokens = len(tokens) + max_tokens # pad tokens => make shape constant => only one jit compilation
+    batch_prompts = batch_parse_prompts(prompts, max_tokens)
+    prompt_count = len(prompts)
     
     ## run inference loop
     key = jrand.PRNGKey(seed)
@@ -279,19 +363,21 @@ def _get_completion(
         if i == 0:
             ### PREFILL
             prefill_start = time.time()
-            next_token_batch, kvcache = inference_prefill(key, pixtral_params, tokens, images, image_start_indices)
-            next_token = next_token_batch[0]
+            next_token_batch, kvcache = inference_prefill(
+                key, pixtral_params,
+                batch_prompts["tokens"], batch_prompts["processed_images"],
+                batch_prompts["image_start_indices"], batch_prompts["next_token_index"],
+                batch_prompts["padding_mask"], temp, lora_params=lora_params
+            )
             # pad kvcache to max token size (jax jit will require constant shapes)
-            blocks, B, Hk, r, T, d = kvcache.K.shape
-            initial_token_count = T-1
-            max_tokens = initial_token_count + max_tokens
+            blocks, B, Hk, r, T, d = kvcache.K.shape        
             padding_tokens = (max_tokens - 1)
             padding_dims = [(0, 0), (0, 0),(0, 0),(0, 0),(0, padding_tokens),(0, 0)] # pad on T dim: KV is (xfmr_blocks, B, Hk, r=1, T, d)
             kvcache = kvcache._replace(
                 K = jnp.pad(kvcache.K, padding_dims, mode="constant", constant_values=0),
                 V = jnp.pad(kvcache.V, padding_dims, mode="constant", constant_values=0),
             )
-            next_token_index = T
+            batch_prompts["next_token_index"] = batch_prompts["next_token_index"] + 1 # broadcast
             log(f"prefill duration: {time.time() - prefill_start:.2f}")
         else:
             ### INFERENCE WITH KVCACHE
@@ -299,40 +385,42 @@ def _get_completion(
                 jit_start = time.time()
             elif i == 2:
                 token_generation_start = time.time()
-            next_token_batch, kvcache = inference_cached(key, pixtral_params, next_token_batch, kvcache, next_token_index)
-            next_token_batch = next_token_batch[0] # double batched for some reason (bug)
-            next_token = next_token_batch[0]
-            next_token_index += 1
+            next_token_batch, kvcache = inference_cached(key, pixtral_params, next_token_batch, kvcache, batch_prompts["next_token_index"], temp, lora_params=lora_params)
+            batch_prompts["next_token_index"] = batch_prompts["next_token_index"] + 1 # broadcast
             if i == 1:
                 jit_end = time.time()
                 finished_jit = True
         ## Print in-progress completion
-        if int(next_token) == 2:
-            completion_token_count += 1
-            break # EOS - stop inference loop
+        if prompt_count == 1:
+            next_token = next_token_batch[0]
+            if int(next_token) == 2:
+                batch_prompts["completion_tokens"] = batch_prompts["completion_tokens"].at[:, i].set(next_token_batch)
+                break # EOS - stop inference loop
+            else:
+                next_token_chars = decode([next_token])
+            if color:
+                next_bytes = next_token_chars.encode("utf-8")
+                next_chars = decoder.decode(next_bytes, final=False)
+                if next_chars:
+                    print(next_chars, end="", flush=True)   
+                #print_color(next_token_chars, color=color, end="")
+            else:
+                print(next_token_chars, end="", flush=True)
         else:
-            next_token_chars = decode([next_token])
-        if color:
-            next_bytes = next_token_chars.encode("utf-8")
-            next_chars = decoder.decode(next_bytes, final=False)
-            if next_chars:
-                print(next_chars, end="", flush=True)   
-            #print_color(next_token_chars, color=color, end="")
-        else:
-            print(next_token_chars, end="", flush=True)
-        completion += next_token_chars
-        completion_token_count += 1
-        tokens.append(int(next_token))
-        completion_tokens.append(int(next_token))
-        #print(tokens) # debug
+            pass
+            #print([decode([int(next_token)]) for next_token in next_token_batch])
+        ## Update 'struct'
+        batch_prompts["completion_tokens"] = batch_prompts["completion_tokens"].at[:, i].set(next_token_batch)
+        
     
     ## print result
-    print("done")
+    duration = time.time() - token_generation_start
     if finished_jit:
         log(f"\n\njit duration:{jit_end - jit_start:.2f}")
-    log("tokens generated: ", completion_token_count)
-    duration = time.time() - token_generation_start
+    tokens_generated = jnp.sum(batch_prompts["completion_tokens"] != 0)
+    log("tokens generated: ", tokens_generated)
     log("generation duration", duration)
-    log("tok/sec", (completion_token_count - 2)/duration) # dont count tokens generated during prefill or jit
-    return decode(completion_tokens)
+    log("tok/sec", (tokens_generated - 2*prompt_count)/duration) # dont count the 2 tokens generated during prefill + jit
+    return [decode(completion_tokens) for completion_tokens in batch_prompts["completion_tokens"][:, :i]]
+
 
