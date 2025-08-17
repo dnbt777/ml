@@ -169,14 +169,20 @@ def forward_cached(model_params: PixtralModel, next_token_batch, kvcache, batch_
   # setup scan data and funcs
   layer_count = kvcache.K.shape[0]
   if lora_params:
-      def scanf(hidden_state, xfmr_block_data):
-        block_params, block_kvcache, block_lora_params = xfmr_block_data
+      def scanf(state, xfmr_block_data):
+        hidden_state, kvcache = state
+        block_idx, block_params, block_lora_params = xfmr_block_data
         hidden_state, K, V = transformer_block_cached(block_params, hidden_state, rope_cos, rope_sin, Hq, Hk, head_dim, attn_scale,
-                                                      block_kvcache.K, block_kvcache.V, batch_next_token_indices, padding_mask, block_lora_params=block_lora_params)
-        return hidden_state, (K, V)
+                                                      kvcache.K[block_idx], kvcache.V[block_idx],
+                                                      batch_next_token_indices, padding_mask, block_lora_params=block_lora_params)
+        kvcache = kvcache._replace(
+            K=kvcache.K.at[block_idx].set(K),
+            V=kvcache.V.at[block_idx].set(V),
+        )
+        return (hidden_state, kvcache), None
       xfmr_blocks_data = (
+          jnp.arange(layer_count),
           model_params.transformer.transformer_layers, # (40, ...)
-          kvcache, # (40, ...)
           lora_params.attention_lora.layers # (40, ...)
       )
   else:
@@ -184,8 +190,7 @@ def forward_cached(model_params: PixtralModel, next_token_batch, kvcache, batch_
         hidden_state, kvcache = state
         block_idx, block_params = xfmr_block_data
         hidden_state, K, V = transformer_block_cached(block_params, hidden_state, rope_cos, rope_sin, Hq, Hk, head_dim, attn_scale,
-                                                      kvcache.K[block_idx],
-                                                      kvcache.V[block_idx],
+                                                      kvcache.K[block_idx], kvcache.V[block_idx],
                                                       batch_next_token_indices, padding_mask, block_lora_params=None)
         kvcache = kvcache._replace(
             K=kvcache.K.at[block_idx].set(K),
@@ -193,7 +198,7 @@ def forward_cached(model_params: PixtralModel, next_token_batch, kvcache, batch_
         ) # optimization: just update the next token, not the whole block's kvcache
         return (hidden_state, kvcache), None
       xfmr_blocks_data = (
-          jnp.arange(layer_count), # layer count
+          jnp.arange(layer_count),
           model_params.transformer.transformer_layers, # (40, ...)
       )
   # do the scan
@@ -222,3 +227,4 @@ def inference_cached(key, pixtral_params, next_token_batch, kvcache, batch_next_
   # random sample
   next_token_batch = jrand.categorical(key, next_token_batch_logits/max(temperature, 1e-5), axis=-1) # (B,1)
   return jnp.squeeze(next_token_batch, axis=-1), kvcache
+
