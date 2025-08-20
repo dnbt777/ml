@@ -15,10 +15,15 @@ Use GRPO to survive a 3-body physics simulation with rockets (status: [env imple
 
 Double deep Q net that plays 6D snake (status: 2D version completed, needs opengl renderer, needs upgrade from regular DQN to double DQN)
 
-Llama 3.2 Vision 11B Inference (status: forward pass needs debugging)
-
 
 # projects so far
+
+[Pixtral inference/LoRA training from scratch in jax](https://github.com/dnbt777/jax_pixtral)
+<img width="919" height="813" alt="image" src="https://github.com/user-attachments/assets/d056636f-30c7-48ce-8b57-89f1a06dc2d8" />
+
+
+
+
 
 [Train a small (19.2M) transformer on the dictionary](https://x.com/dnbt777/status/1880140034239807640)
 
